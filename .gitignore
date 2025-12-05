@@ -7,3 +7,20 @@ printer-[0-9]*_[0-9]*.cfg
 *.bkp
 *.csv
 *.zip
+
+# Fichiers GCode volumineux
+gcodes/
+
+# Logs
+logs/
+
+# Bases de données locales
+database/
+
+# Fichiers temporaires ou système
+*.asvc
+*.tmp
+
+# Configurations Fluidd/Mainsail si tu ne veux pas les pousser
+printer_data/config/fluidd.cfg
+printer_data/config/mainsail.cfg
