@@ -1,0 +1,2177 @@
+Starting Klippy...
+Args: ['/home/mks/klipper/klippy/klippy.py', '/home/mks/printer_data/config/printer.cfg', '-I', '/home/mks/printer_data/comms/klippy.serial', '-l', '/home/mks/printer_data/logs/klippy.log', '-a', '/home/mks/printer_data/comms/klippy.sock']
+Git version: 'v0.13.0-419-g2e5802370-dirty'
+Untracked files: klippy/extras/gcode_shell_command.py
+Branch: master
+Remote: origin
+Tracked URL: https://github.com/Klipper3d/klipper
+CPU: 4 core ?
+Device: Makerbase mks-pi
+Linux: Linux version 6.1.67-current-rockchip64 (armbian@next) (aarch64-linux-gnu-gcc (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0, GNU ld (GNU Binutils for Ubuntu) 2.38) #2 SMP PREEMPT Mon Dec 11 09:41:01 GMT 2023
+Python: '3.11.2 (main, Apr 28 2025, 14:11:48) [GCC 12.2.0]'
+Start printer at Fri Dec  5 16:17:20 2025 (1764947840.2 27.5)
+===== Config file =====
+[virtual_sdcard]
+path = ~/printer_data/gcodes
+on_error_gcode = CANCEL_PRINT
+
+[pause_resume]
+
+[display_status]
+
+[respond]
+
+[gcode_macro CANCEL_PRINT]
+description = Cancel the actual running print
+rename_existing = BASE_CANCEL_PRINT
+gcode = 
+	SET_IDLE_TIMEOUT TIMEOUT={printer.configfile.settings.idle_timeout.timeout}
+	CLEAR_PAUSE
+	SDCARD_RESET_FILE
+	PRINT_END
+	BASE_CANCEL_PRINT
+
+[gcode_macro PAUSE]
+description = Pause the actual running print
+rename_existing = BASE_PAUSE
+variable_restore_idle_timeout = 0
+gcode = 
+	
+	{% set z = params.Z|default(30)|int %}
+	{% if printer['pause_resume'].is_paused|int == 0 %}
+	SET_GCODE_VARIABLE MACRO=RESUME VARIABLE=etemp VALUE={printer['extruder'].target|default(220)}
+	
+	SET_GCODE_VARIABLE MACRO=LOAD_FILAMENT VARIABLE=prev_temp VALUE={printer['extruder'].target|default(220)}
+	SET_GCODE_VARIABLE MACRO=UNLOAD_FILAMENT VARIABLE=prev_temp VALUE={printer['extruder'].target|default(220)}
+	
+	SET_GCODE_VARIABLE MACRO=RESUME VARIABLE=zhop VALUE={z}
+	SET_FILAMENT_SENSOR SENSOR=filament_sensor ENABLE=0
+	SAVE_GCODE_STATE NAME=PAUSE
+	BASE_PAUSE
+	G91
+	{% if (printer.gcode_move.position.z + z) < printer.toolhead.axis_maximum.z %}
+	G1 E-2 F2700
+	G1 X3 Y3 F3000
+	G1 E-2 Z{z} F1600
+	SAVE_GCODE_STATE NAME=ZLIFT
+	{% else %}
+	{ action_respond_info("Pause zhop exceeds maximum Z height.") }
+	SET_GCODE_VARIABLE MACRO=RESUME VARIABLE=zhop VALUE=0
+	G1 E-2 F2700
+	G1 X3 Y3 F3000
+	G1 E-2 F1600
+	SAVE_GCODE_STATE NAME=ZLIFT
+	{% endif %}
+	G90
+	G1 X{printer.toolhead.axis_minimum.x+5} Y{printer.toolhead.axis_maximum.y-5} F6000
+	SAVE_GCODE_STATE NAME=PAUSEPARK
+	SET_HEATER_TEMPERATURE HEATER=extruder TARGET=175
+	SET_IDLE_TIMEOUT TIMEOUT=43200
+	{% endif %}
+
+[gcode_macro RESUME]
+description = Resume the actual running print
+rename_existing = BASE_RESUME
+variable_last_extruder_temp = {'restore': False, 'temp': 0}
+gcode = 
+	{% if printer['pause_resume'].is_paused|int == 1 %}
+	SET_FILAMENT_SENSOR SENSOR=filament_sensor ENABLE=1
+	SET_IDLE_TIMEOUT TIMEOUT={printer.configfile.settings.idle_timeout.timeout}
+	{% if etemp > 0 %}
+	SET_HEATER_TEMPERATURE HEATER=extruder TARGET={etemp|int}
+	TEMPERATURE_WAIT SENSOR=extruder MINIMUM={etemp|int - 4} MAXIMUM={etemp|int + 10}
+	{% endif %}
+	RESTORE_GCODE_STATE NAME=PAUSEPARK MOVE=1 MOVE_SPEED=100
+	G91
+	M83
+	G1 E80  F200
+	G4 P2000
+	G1 X20 F15000
+	G1 X-20
+	G1 X20
+	G1 X-20
+	G1 X20
+	G1 X-20
+	RESTORE_GCODE_STATE NAME=ZLIFT MOVE=1 MOVE_SPEED=60
+	G1 X-3 Y-3 F3000
+	G1 Z{zhop * -1} F900
+	RESTORE_GCODE_STATE NAME=PAUSE MOVE=1 MOVE_SPEED=60
+	M400
+	BASE_RESUME
+	{% endif %}
+variable_restore_idle_timeout = 0
+variable_idle_state = False
+variable_zhop = 0
+variable_etemp = 0
+
+[gcode_macro SET_PAUSE_NEXT_LAYER]
+description = Enable a pause if the next layer is reached
+gcode = 
+	{% set pause_next_layer = printer['gcode_macro SET_PRINT_STATS_INFO'].pause_next_layer %}
+	{% set ENABLE = params.ENABLE | default(1)|int != 0 %}
+	{% set MACRO = params.MACRO | default(pause_next_layer.call, True) %}
+	SET_GCODE_VARIABLE MACRO=SET_PRINT_STATS_INFO VARIABLE=pause_next_layer VALUE="{{ 'enable': ENABLE, 'call': MACRO }}"
+
+[gcode_macro SET_PAUSE_AT_LAYER]
+description = Enable/disable a pause if a given layer number is reached
+gcode = 
+	{% set pause_at_layer = printer['gcode_macro SET_PRINT_STATS_INFO'].pause_at_layer %}
+	{% set ENABLE = params.ENABLE | int != 0 if params.ENABLE is defined
+	else params.LAYER is defined %}
+	{% set LAYER = params.LAYER | default(pause_at_layer.layer) | int %}
+	{% set MACRO = params.MACRO | default(pause_at_layer.call, True) %}
+	SET_GCODE_VARIABLE MACRO=SET_PRINT_STATS_INFO VARIABLE=pause_at_layer VALUE="{{ 'enable': ENABLE, 'layer': LAYER, 'call': MACRO }}"
+
+[gcode_macro SET_PRINT_STATS_INFO]
+rename_existing = SET_PRINT_STATS_INFO_BASE
+description = Overwrite, to get pause_next_layer and pause_at_layer feature
+variable_pause_next_layer = { 'enable': False, 'call': "PAUSE" }
+variable_pause_at_layer = { 'enable': False, 'layer': 0, 'call': "PAUSE" }
+gcode = 
+	{% if pause_next_layer.enable %}
+	RESPOND TYPE=echo MSG='{"%s, forced by pause_next_layer" % pause_next_layer.call}'
+	{pause_next_layer.call}
+	SET_PAUSE_NEXT_LAYER ENABLE=0
+	{% elif pause_at_layer.enable and params.CURRENT_LAYER is defined and params.CURRENT_LAYER | int == pause_at_layer.layer %}
+	RESPOND TYPE=echo MSG='{"%s, forced by pause_at_layer [%d]" % (pause_at_layer.call, pause_at_layer.layer)}'
+	{pause_at_layer.call}
+	SET_PAUSE_AT_LAYER ENABLE=0
+	{% endif %}
+	SET_PRINT_STATS_INFO_BASE {rawparams}
+
+[gcode_macro _TOOLHEAD_PARK_PAUSE_CANCEL]
+description = Helper: park toolhead used in PAUSE and CANCEL_PRINT
+gcode = 
+	
+	{% set client = printer['gcode_macro _CLIENT_VARIABLE'] | default({}) %}
+	{% set velocity = printer.configfile.settings.pause_resume.recover_velocity %}
+	{% set use_custom     = client.use_custom_pos | default(false) | lower == 'true' %}
+	{% set custom_park_x  = client.custom_park_x | default(0.0) %}
+	{% set custom_park_y  = client.custom_park_y | default(0.0) %}
+	{% set park_dz        = client.custom_park_dz | default(2.0) | abs %}
+	{% set sp_hop         = client.speed_hop | default(15) * 60 %}
+	{% set sp_move        = client.speed_move | default(velocity) * 60 %}
+	
+	{% set origin    = printer.gcode_move.homing_origin %}
+	{% set act       = printer.gcode_move.gcode_position %}
+	{% set max       = printer.toolhead.axis_maximum %}
+	{% set cone      = printer.toolhead.cone_start_z | default(max.z) %}
+	{% set round_bed = True if printer.configfile.settings.printer.kinematics is in ['delta','polar','rotary_delta','winch']
+	else False %}
+	
+	{% set z_min = params.Z_MIN | default(0) | float %}
+	{% set z_park = [[(act.z + park_dz), z_min]|max, (max.z - origin.z)] | min %}
+	{% set x_park = params.X       if params.X is defined
+	else custom_park_x  if use_custom
+	else 0.0            if round_bed
+	else (max.x - 5.0) %}
+	{% set y_park = params.Y       if params.Y is defined
+	else custom_park_y  if use_custom
+	else (max.y - 5.0)  if round_bed and z_park < cone
+	else 0.0            if round_bed
+	else (max.y - 5.0) %}
+	
+	_CLIENT_RETRACT
+	{% if "xyz" in printer.toolhead.homed_axes %}
+	G90
+	G1 Z{z_park} F{sp_hop}
+	G1 X{x_park} Y{y_park} F{sp_move}
+	{% if not printer.gcode_move.absolute_coordinates %} G91 {% endif %}
+	{% else %}
+	RESPOND TYPE=echo MSG='Printer not homed'
+	{% endif %}
+
+[gcode_macro _CLIENT_EXTRUDE]
+description = Extrudes, if the extruder is hot enough
+gcode = 
+	
+	{% set client = printer['gcode_macro _CLIENT_VARIABLE'] | default({}) %}
+	{% set use_fw_retract = (client.use_fw_retract | default(false) | lower == 'true') and (printer.firmware_retraction is defined) %}
+	{% set length = params.LENGTH | default(client.unretract) | default(1.0) | float %}
+	{% set speed = params.SPEED | default(client.speed_unretract) | default(35) %}
+	{% set absolute_extrude = printer.gcode_move.absolute_extrude %}
+	
+	{% if printer.toolhead.extruder != '' %}
+	{% if printer[printer.toolhead.extruder].can_extrude %}
+	{% if use_fw_retract %}
+	{% if length < 0 %}
+	G10
+	{% else %}
+	G11
+	{% endif %}
+	{% else %}
+	M83
+	G1 E{length} F{(speed | float | abs) * 60}
+	{% if absolute_extrude %}
+	M82
+	{% endif %}
+	{% endif %}
+	{% else %}
+	RESPOND TYPE=echo MSG='{"\"%s\" not hot enough" % printer.toolhead.extruder}'
+	{% endif %}
+	{% endif %}
+
+[gcode_macro _CLIENT_RETRACT]
+description = Retracts, if the extruder is hot enough
+gcode = 
+	{% set client = printer['gcode_macro _CLIENT_VARIABLE'] | default({}) %}
+	{% set length = params.LENGTH | default(client.retract) | default(1.0) | float %}
+	{% set speed = params.SPEED | default(client.speed_retract) | default(35) %}
+	
+	_CLIENT_EXTRUDE LENGTH=-{length | float | abs} SPEED={speed | float | abs}
+
+[gcode_macro _CLIENT_LINEAR_MOVE]
+description = Linear move with save and restore of the gcode state
+gcode = 
+	{% set x_move = "X" ~ params.X if params.X is defined else "" %}
+	{% set y_move = "Y" ~ params.Y if params.Y is defined else "" %}
+	{% set z_move = "Z" ~ params.Z if params.Z is defined else "" %}
+	{% set e_move = "E" ~ params.E if params.E is defined else "" %}
+	{% set rate = "F" ~ params.F if params.F is defined else "" %}
+	{% set ABSOLUTE = params.ABSOLUTE | default(0) | int != 0 %}
+	{% set ABSOLUTE_E = params.ABSOLUTE_E | default(0) | int != 0 %}
+	SAVE_GCODE_STATE NAME=_client_movement
+	{% if x_move or y_move or z_move %}
+	G9{ 0 if ABSOLUTE else 1 }
+	{% endif %}
+	{% if e_move %}
+	M8{ 2 if ABSOLUTE_E else 3 }
+	{% endif %}
+	G1 { x_move } { y_move } { z_move } { e_move } { rate }
+	RESTORE_GCODE_STATE NAME=_client_movement
+
+[gcode_macro _KAMP_Settings]
+description = This macro contains all adjustable settings for KAMP
+variable_verbose_enable = True
+variable_mesh_margin = 5
+variable_fuzz_amount = 0
+variable_probe_dock_enable = False
+variable_attach_macro = 'Attach_Probe'
+variable_detach_macro = 'Dock_Probe'
+variable_purge_height = 0.8
+variable_tip_distance = 1.8
+variable_purge_margin = 15
+variable_purge_amount = 30
+variable_flow_rate = 15
+variable_smart_park_height = 10
+gcode = 
+	
+	{action_respond_info(" Running the KAMP_Settings macro does nothing, it is only used for storing KAMP settings. ")}
+
+[gcode_macro SMART_PARK]
+description = Parks your printhead near the print area for pre-print hotend heating.
+gcode = 
+	
+	{% set kamp_settings = printer["gcode_macro _KAMP_Settings"] %}
+	{% set z_height = kamp_settings.smart_park_height | float %}
+	{% set purge_margin = kamp_settings.purge_margin | float %}
+	{% set verbose_enable = kamp_settings.verbose_enable | abs %}
+	{% set center_x = printer.toolhead.axis_maximum.x / 2 | float %}
+	{% set center_y = printer.toolhead.axis_maximum.y / 2 | float %}
+	{% set axis_minimum_x = printer.toolhead.axis_minimum.x | float %}
+	{% set axis_minimum_y = printer.toolhead.axis_minimum.y | float %}
+	{% set all_points = printer.exclude_object.objects | map(attribute='polygon') | sum(start=[]) %}
+	{% set x_min = all_points | map(attribute=0) | min | default(center_x) %}
+	{% set y_min = all_points | map(attribute=1) | min | default(center_y) %}
+	{% set travel_speed = (printer.toolhead.max_velocity) * 60 | float %}
+	
+	{% if purge_margin > 0 and x_min != center_x and y_min != center_y %}
+	{% set x_min = [ x_min - purge_margin , x_min ] | min %}
+	{% set y_min = [ y_min - purge_margin , y_min ] | min %}
+	{% set x_min = [ x_min , axis_minimum_x ] | max %}
+	{% set y_min = [ y_min , axis_minimum_y ] | max %}
+	{% endif %}
+	
+	
+	{% if verbose_enable == True %}
+	
+	{ action_respond_info("Smart Park location: {},{}.".format(
+	(x_min),
+	(y_min),
+	)) }
+	
+	{% endif %}
+	
+	SAVE_GCODE_STATE NAME=Presmartpark_State
+	
+	G90
+	{% if printer.toolhead.position.z < z_height %}
+	G0 Z{z_height}
+	{% endif %}
+	G0 X{x_min} Y{y_min} F{travel_speed}
+	G0 Z{z_height}
+	
+	RESTORE_GCODE_STATE NAME=Presmartpark_State
+
+[gcode_macro LINE_PURGE]
+description = A purge macro that adapts to be near your actual printed objects
+gcode = 
+	
+	{% set travel_speed = (printer.toolhead.max_velocity) * 60 | float %}
+	{% set cross_section = printer.configfile.settings.extruder.max_extrude_cross_section | float %}
+	
+	
+	{% if printer.firmware_retraction is defined %}
+	{% set RETRACT = G10 | string %}
+	{% set UNRETRACT = G11 | string %}
+	{% else %}
+	{% set RETRACT = 'G1 E-.5 F2100' | string %}
+	{% set UNRETRACT = 'G1 E.5 F2100' | string %}
+	{% endif %}
+	
+	
+	{% set verbose_enable = printer["gcode_macro _KAMP_Settings"].verbose_enable | abs %}
+	{% set purge_height = printer["gcode_macro _KAMP_Settings"].purge_height | float %}
+	{% set tip_distance = printer["gcode_macro _KAMP_Settings"].tip_distance | float %}
+	{% set purge_margin = printer["gcode_macro _KAMP_Settings"].purge_margin | float %}
+	{% set purge_amount = printer["gcode_macro _KAMP_Settings"].purge_amount | float %}
+	{% set flow_rate = printer["gcode_macro _KAMP_Settings"].flow_rate | float %}
+	
+	
+	
+	{% set all_points = printer.exclude_object.objects | map(attribute='polygon') | sum(start=[]) %}
+	{% set purge_x_min = (all_points | map(attribute=0) | min | default(0)) %}
+	{% set purge_x_max = (all_points | map(attribute=0) | max | default(0)) %}
+	{% set purge_y_min = (all_points | map(attribute=1) | min | default(0)) %}
+	{% set purge_y_max = (all_points | map(attribute=1) | max | default(0)) %}
+	
+	{% set purge_x_center = ([((purge_x_max + purge_x_min) / 2) - (purge_amount / 2), 0] | max) %}
+	{% set purge_y_center = ([((purge_y_max + purge_y_min) / 2) - (purge_amount / 2), 0] | max) %}
+	
+	{% set purge_x_origin = ([purge_x_min - purge_margin, 0] | max) %}
+	{% set purge_y_origin = ([purge_y_min - purge_margin, 0] | max) %}
+	
+	
+	{% set purge_move_speed = (flow_rate / 5.0) * 60 | float %}
+	
+	{% if cross_section < 5 %}
+	
+	{action_respond_info("[Extruder] max_extrude_cross_section is insufficient for purge, please set it to 5 or greater. Purge skipped.")}
+	
+	{% else %}
+	
+	{% if verbose_enable == True %}
+	
+	{action_respond_info("Moving filament tip {}mms".format(
+	(tip_distance),
+	)) }
+	{% endif %}
+	
+	{% if printer.firmware_retraction is defined %}
+	{action_respond_info("KAMP purge is using firmware retraction.")}
+	{% else %}
+	{action_respond_info("KAMP purge is not using firmware retraction, it is recommended to configure it.")}
+	{% endif %}
+	
+	{% if purge_y_origin > 0 %}
+	
+	{action_respond_info("KAMP purge starting at {}, {} and purging {}mm of filament, requested flow rate is {}mm3/s.".format(
+	(purge_x_center),
+	(purge_y_origin),
+	(purge_amount),
+	(flow_rate),
+	)) }
+	
+	{% else %}
+	
+	{action_respond_info("KAMP purge starting at {}, {} and purging {}mm of filament, requested flow rate is {}mm3/s.".format(
+	(purge_x_origin),
+	(purge_y_center),
+	(purge_amount),
+	(flow_rate),
+	)) }
+	
+	{% endif %}
+	
+	SAVE_GCODE_STATE NAME=Prepurge_State
+	
+	{% if purge_y_origin > 0 %}
+	
+	G92 E0
+	G0 F{travel_speed}
+	G90
+	G0 X{purge_x_center} Y{purge_y_origin}
+	G0 Z{purge_height}
+	M83
+	G1 E{tip_distance} F{purge_move_speed}
+	G1 X{purge_x_center + purge_amount} E{purge_amount} F{purge_move_speed}
+	{RETRACT}
+	G0 X{purge_x_center + purge_amount + 10} F{travel_speed}
+	G92 E0
+	M82
+	G0 Z{purge_height * 2} F{travel_speed}
+	
+	{% else %}
+	
+	G92 E0
+	G0 F{travel_speed}
+	G90
+	G0 X{purge_x_origin} Y{purge_y_center}
+	G0 Z{purge_height}
+	M83
+	G1 E{tip_distance} F{purge_move_speed}
+	G1 Y{purge_y_center + purge_amount} E{purge_amount} F{purge_move_speed}
+	{RETRACT}
+	G0 Y{purge_y_center + purge_amount + 10} F{travel_speed}
+	G92 E0
+	M82
+	G0 Z{purge_height * 2} F{travel_speed}
+	
+	{% endif %}
+	
+	RESTORE_GCODE_STATE NAME=Prepurge_State
+	
+	{% endif %}
+
+[gcode_macro GET_TIMELAPSE_SETUP]
+description = Print the Timelapse setup
+gcode = 
+	{% set tl = printer['gcode_macro TIMELAPSE_TAKE_FRAME'] %}
+	{% set output_txt = ["Timelapse Setup:"] %}
+	{% set _dummy = output_txt.append("enable: %s" % tl.enable) %}
+	{% set _dummy = output_txt.append("park: %s" % tl.park.enable) %}
+	{% if tl.park.enable %}
+	{% set _dummy = output_txt.append("park position: %s time: %s s" % (tl.park.pos, tl.park.time)) %}
+	{% set _dummy = output_txt.append("park cord x:%s y:%s dz:%s" % (tl.park.coord.x, tl.park.coord.y, tl.park.coord.dz)) %}
+	{% set _dummy = output_txt.append("travel speed: %s mm/s" % tl.speed.travel) %}
+	{% endif %}
+	{% set _dummy = output_txt.append("fw_retract: %s" % tl.extruder.fw_retract) %}
+	{% if not tl.extruder.fw_retract %}
+	{% set _dummy = output_txt.append("retract: %s mm speed: %s mm/s" % (tl.extruder.retract, tl.speed.retract)) %}
+	{% set _dummy = output_txt.append("extrude: %s mm speed: %s mm/s" % (tl.extruder.extrude, tl.speed.extrude)) %}
+	{% endif %}
+	{% set _dummy = output_txt.append("verbose: %s" % tl.verbose) %}
+	{action_respond_info(output_txt|join("\n"))}
+
+[gcode_macro _SET_TIMELAPSE_SETUP]
+description = Set user parameters for timelapse
+gcode = 
+	{% set tl = printer['gcode_macro TIMELAPSE_TAKE_FRAME'] %}
+	
+	{% set min = printer.toolhead.axis_minimum %}
+	{% set max = printer.toolhead.axis_maximum %}
+	{% set round_bed = True if printer.configfile.settings.printer.kinematics is in ['delta','polar','rotary_delta','winch']
+	else False %}
+	{% set park = {'min'   : {'x': (min.x / 1.42)|round(3) if round_bed else min.x|round(3),
+	'y': (min.y / 1.42)|round(3) if round_bed else min.y|round(3)},
+	'max'   : {'x': (max.x / 1.42)|round(3) if round_bed else max.x|round(3),
+	'y': (max.y / 1.42)|round(3) if round_bed else max.y|round(3)},
+	'center': {'x': (max.x-(max.x-min.x)/2)|round(3),
+	'y': (max.y-(max.y-min.y)/2)|round(3)}} %}
+	
+	{% if params.ENABLE %}
+	{% if params.ENABLE|lower is in ['true', 'false'] %}
+	SET_GCODE_VARIABLE MACRO=TIMELAPSE_TAKE_FRAME VARIABLE=enable VALUE={True if params.ENABLE|lower == 'true' else False}
+	{% else %}
+	{action_raise_error("ENABLE=%s not supported. Allowed values are [True, False]" % params.ENABLE|capitalize)}
+	{% endif %}
+	{% endif %}
+	{% if params.VERBOSE %}
+	{% if params.VERBOSE|lower is in ['true', 'false'] %}
+	SET_GCODE_VARIABLE MACRO=TIMELAPSE_TAKE_FRAME VARIABLE=verbose VALUE={True if params.VERBOSE|lower == 'true' else False}
+	{% else %}
+	{action_raise_error("VERBOSE=%s not supported. Allowed values are [True, False]" % params.VERBOSE|capitalize)}
+	{% endif %}
+	{% endif %}
+	{% if params.CUSTOM_POS_X %}
+	{% if params.CUSTOM_POS_X|float >= min.x and params.CUSTOM_POS_X|float <= max.x %}
+	{% set _dummy = tl.park.custom.update({'x':params.CUSTOM_POS_X|float|round(3)}) %}
+	{% else %}
+	{action_raise_error("CUSTOM_POS_X=%s must be within [%s - %s]" % (params.CUSTOM_POS_X, min.x, max.x))}
+	{% endif %}
+	{% endif %}
+	{% if params.CUSTOM_POS_Y %}
+	{% if params.CUSTOM_POS_Y|float >= min.y and params.CUSTOM_POS_Y|float <= max.y %}
+	{% set _dummy = tl.park.custom.update({'y':params.CUSTOM_POS_Y|float|round(3)}) %}
+	{% else %}
+	{action_raise_error("CUSTOM_POS_Y=%s must be within [%s - %s]" % (params.CUSTOM_POS_Y, min.y, max.y))}
+	{% endif %}
+	{% endif %}
+	{% if params.CUSTOM_POS_DZ %}
+	{% if params.CUSTOM_POS_DZ|float >= min.z and params.CUSTOM_POS_DZ|float <= max.z %}
+	{% set _dummy = tl.park.custom.update({'dz':params.CUSTOM_POS_DZ|float|round(3)}) %}
+	{% else %}
+	{action_raise_error("CUSTOM_POS_DZ=%s must be within [%s - %s]" % (params.CUSTOM_POS_DZ, min.z, max.z))}
+	{% endif %}
+	{% endif %}
+	{% if params.PARK_ENABLE %}
+	{% if params.PARK_ENABLE|lower is in ['true', 'false'] %}
+	{% set _dummy = tl.park.update({'enable':True if params.PARK_ENABLE|lower == 'true' else False}) %}
+	{% else %}
+	{action_raise_error("PARK_ENABLE=%s not supported. Allowed values are [True, False]" % params.PARK_ENABLE|capitalize)}
+	{% endif %}
+	{% endif %}
+	{% if params.PARK_POS %}
+	{% if params.PARK_POS|lower is in ['center','front_left','front_right','back_left','back_right','custom','x_only','y_only'] %}
+	{% set dic = {'center'      : {'x': park.center.x   , 'y': park.center.y   , 'dz': 1                },
+	'front_left'  : {'x': park.min.x      , 'y': park.min.y      , 'dz': 0                },
+	'front_right' : {'x': park.max.x      , 'y': park.min.y      , 'dz': 0                },
+	'back_left'   : {'x': park.min.x      , 'y': park.max.y      , 'dz': 0                },
+	'back_right'  : {'x': park.max.x      , 'y': park.max.y      , 'dz': 0                },
+	'custom'      : {'x': tl.park.custom.x, 'y': tl.park.custom.y, 'dz': tl.park.custom.dz},
+	'x_only'      : {'x': tl.park.custom.x, 'y': 'none'          , 'dz': tl.park.custom.dz},
+	'y_only'      : {'x': 'none'          , 'y': tl.park.custom.y, 'dz': tl.park.custom.dz}} %}
+	{% set _dummy = tl.park.update({'pos':params.PARK_POS|lower}) %}
+	{% set _dummy = tl.park.update({'coord':dic[tl.park.pos]}) %}
+	{% else %}
+	{action_raise_error("PARK_POS=%s not supported. Allowed values are [CENTER, FRONT_LEFT, FRONT_RIGHT, BACK_LEFT, BACK_RIGHT, CUSTOM, X_ONLY, Y_ONLY]"
+	% params.PARK_POS|upper)}
+	{% endif %}
+	{% endif %}
+	{% if params.PARK_TIME %}
+	{% if params.PARK_TIME|float >= 0.0 %}
+	{% set _dummy = tl.park.update({'time':params.PARK_TIME|float|round(3)}) %}
+	{% else %}
+	{action_raise_error("PARK_TIME=%s must be a positive number" % params.PARK_TIME)}
+	{% endif %}
+	{% endif %}
+	SET_GCODE_VARIABLE MACRO=TIMELAPSE_TAKE_FRAME VARIABLE=park VALUE="{tl.park}"
+	{% if params.TRAVEL_SPEED %}
+	{% if params.TRAVEL_SPEED|float > 0.0 %}
+	{% set _dummy = tl.speed.update({'travel':params.TRAVEL_SPEED|float|round(3)}) %}
+	{% else %}
+	{action_raise_error("TRAVEL_SPEED=%s must be larger than 0" % params.TRAVEL_SPEED)}
+	{% endif %}
+	{% endif %}
+	{% if params.RETRACT_SPEED %}
+	{% if params.RETRACT_SPEED|float > 0.0 %}
+	{% set _dummy = tl.speed.update({'retract':params.RETRACT_SPEED|float|round(3)}) %}
+	{% else %}
+	{action_raise_error("RETRACT_SPEED=%s must be larger than 0" % params.RETRACT_SPEED)}
+	{% endif %}
+	{% endif %}
+	{% if params.EXTRUDE_SPEED %}
+	{% if params.EXTRUDE_SPEED|float > 0.0 %}
+	{% set _dummy = tl.speed.update({'extrude':params.EXTRUDE_SPEED|float|round(3)}) %}
+	{% else %}
+	{action_raise_error("EXTRUDE_SPEED=%s must be larger than 0" % params.EXTRUDE_SPEED)}
+	{% endif %}
+	{% endif %}
+	SET_GCODE_VARIABLE MACRO=TIMELAPSE_TAKE_FRAME VARIABLE=speed VALUE="{tl.speed}"
+	{% if params.EXTRUDE_DISTANCE %}
+	{% if params.EXTRUDE_DISTANCE|float >= 0.0 %}
+	{% set _dummy = tl.extruder.update({'extrude':params.EXTRUDE_DISTANCE|float|round(3)}) %}
+	{% else %}
+	{action_raise_error("EXTRUDE_DISTANCE=%s must be specified as positiv number" % params.EXTRUDE_DISTANCE)}
+	{% endif %}
+	{% endif %}
+	{% if params.RETRACT_DISTANCE %}
+	{% if params.RETRACT_DISTANCE|float >= 0.0 %}
+	{% set _dummy = tl.extruder.update({'retract':params.RETRACT_DISTANCE|float|round(3)}) %}
+	{% else %}
+	{action_raise_error("RETRACT_DISTANCE=%s must be specified as positiv number" % params.RETRACT_DISTANCE)}
+	{% endif %}
+	{% endif %}
+	{% if params.FW_RETRACT %}
+	{% if params.FW_RETRACT|lower is in ['true', 'false'] %}
+	{% if 'firmware_retraction' in printer.configfile.settings %}
+	{% set _dummy = tl.extruder.update({'fw_retract': True if params.FW_RETRACT|lower == 'true' else False}) %}
+	{% else %}
+	{% set _dummy = tl.extruder.update({'fw_retract':False}) %}
+	{% if params.FW_RETRACT|capitalize == 'True' %}
+	{action_raise_error("[firmware_retraction] not defined in printer.cfg. Can not enable fw_retract")}
+	{% endif %}
+	{% endif %}
+	{% else %}
+	{action_raise_error("FW_RETRACT=%s not supported. Allowed values are [True, False]" % params.FW_RETRACT|capitalize)}
+	{% endif %}
+	{% endif %}
+	SET_GCODE_VARIABLE MACRO=TIMELAPSE_TAKE_FRAME VARIABLE=extruder VALUE="{tl.extruder}"
+	{% if printer.configfile.settings['gcode_macro pause'] is defined %}
+	{% set _dummy = tl.macro.update({'pause': printer.configfile.settings['gcode_macro pause'].rename_existing}) %}
+	{% endif %}
+	{% if printer.configfile.settings['gcode_macro resume'] is defined %}
+	{% set _dummy = tl.macro.update({'resume': printer.configfile.settings['gcode_macro resume'].rename_existing}) %}
+	{% endif %}
+	SET_GCODE_VARIABLE MACRO=TIMELAPSE_TAKE_FRAME VARIABLE=macro VALUE="{tl.macro}"
+
+[gcode_macro TIMELAPSE_TAKE_FRAME]
+description = Take Timelapse shoot
+variable_enable = False
+variable_takingframe = False
+variable_park = {'enable': False,
+	'pos'   : 'center',
+	'time'  : 0.1,
+	'custom': {'x': 0, 'y': 0, 'dz': 0},
+	'coord' : {'x': 0, 'y': 0, 'dz': 0}}
+variable_extruder = {'fw_retract': False,
+	'retract': 1.0,
+	'extrude': 1.0}
+variable_speed = {'travel': 100,
+	'retract': 15,
+	'extrude': 15}
+variable_verbose = True
+variable_check_time = 0.5
+variable_restore = {'absolute': {'coordinates': True, 'extrude': True}, 'speed': 1500, 'e':0, 'factor': {'speed': 1.0, 'extrude': 1.0}}
+variable_macro = {'pause': 'PAUSE', 'resume': 'RESUME'}
+variable_is_paused = False
+gcode = 
+	{% set hyperlapse = True if params.HYPERLAPSE and params.HYPERLAPSE|lower =='true' else False %}
+	{% if enable %}
+	{% if (hyperlapse and printer['gcode_macro HYPERLAPSE'].run) or
+	(not hyperlapse and not printer['gcode_macro HYPERLAPSE'].run) %}
+	{% if park.enable %}
+	{% set pos = {'x': 'X' + park.coord.x|string if park.pos != 'y_only' else '',
+	'y': 'Y' + park.coord.y|string if park.pos != 'x_only' else '',
+	'z': 'Z'+ [printer.gcode_move.gcode_position.z + park.coord.dz, printer.toolhead.axis_maximum.z]|min|string} %}
+	{% set restore = {'absolute': {'coordinates': printer.gcode_move.absolute_coordinates,
+	'extrude'    : printer.gcode_move.absolute_extrude},
+	'speed'   : printer.gcode_move.speed,
+	'e'       : printer.gcode_move.gcode_position.e,
+	'factor'  : {'speed'  : printer.gcode_move.speed_factor,
+	'extrude': printer.gcode_move.extrude_factor}} %}
+	SET_GCODE_VARIABLE MACRO=TIMELAPSE_TAKE_FRAME VARIABLE=restore VALUE="{restore}"
+	{% if not printer[printer.toolhead.extruder].can_extrude %}
+	{% if verbose %}{action_respond_info("Timelapse: Warning, minimum extruder temperature not reached!")}{% endif %}
+	{% else %}
+	{% if extruder.fw_retract %}
+	G10
+	{% else %}
+	M83
+	G0 E-{extruder.retract} F{speed.retract * 60}
+	{% endif %}
+	{% endif %}
+	SET_GCODE_VARIABLE MACRO=TIMELAPSE_TAKE_FRAME VARIABLE=is_paused VALUE=True
+	{macro.pause}
+	SET_GCODE_OFFSET X=0 Y=0
+	G90
+	{% if "xyz" not in printer.toolhead.homed_axes %}
+	{% if verbose %}{action_respond_info("Timelapse: Warning, axis not homed yet!")}{% endif %}
+	{% else %}
+	G0 {pos.x} {pos.y} {pos.z} F{speed.travel * 60}
+	{% endif %}
+	SET_GCODE_VARIABLE MACRO=TIMELAPSE_TAKE_FRAME VARIABLE=takingframe VALUE=True
+	UPDATE_DELAYED_GCODE ID=_WAIT_TIMELAPSE_TAKE_FRAME DURATION={check_time}
+	M400
+	{% endif %}
+	_TIMELAPSE_NEW_FRAME HYPERLAPSE={hyperlapse}
+	{% endif %}
+	{% else %}
+	{% if verbose %}{action_respond_info("Timelapse: disabled, take frame ignored")}{% endif %}
+	{% endif %}
+
+[gcode_macro _TIMELAPSE_NEW_FRAME]
+description = action call for timelapse shoot. must be a seperate macro
+gcode = 
+	{action_call_remote_method("timelapse_newframe",
+	macropark=printer['gcode_macro TIMELAPSE_TAKE_FRAME'].park,
+	hyperlapse=params.HYPERLAPSE)}
+
+[delayed_gcode _WAIT_TIMELAPSE_TAKE_FRAME]
+gcode = 
+	{% set tl = printer['gcode_macro TIMELAPSE_TAKE_FRAME'] %}
+	{% set factor = {'speed': printer.gcode_move.speed_factor, 'extrude': printer.gcode_move.extrude_factor} %}
+	{% if tl.takingframe %}
+	UPDATE_DELAYED_GCODE ID=_WAIT_TIMELAPSE_TAKE_FRAME DURATION={tl.check_time}
+	{% else %}
+	{tl.macro.resume} VELOCITY={tl.speed.travel}
+	SET_GCODE_VARIABLE MACRO=TIMELAPSE_TAKE_FRAME VARIABLE=is_paused VALUE=False
+	{% if not printer[printer.toolhead.extruder].can_extrude %}
+	{action_respond_info("Timelapse: Warning minimum extruder temperature not reached!")}
+	{% else %}
+	{% if tl.extruder.fw_retract %}
+	G11
+	{% else %}
+	G0 E{tl.extruder.extrude} F{tl.speed.extrude * 60}
+	G0 F{tl.restore.speed}
+	{% if tl.restore.absolute.extrude %}
+	M82
+	G92 E{tl.restore.e}
+	{% endif %}
+	{% endif %}
+	{% endif %}
+	{% if tl.restore.factor.speed   != factor.speed   %} M220 S{(factor.speed*100)|round(0)}   {% endif %}
+	{% if tl.restore.factor.extrude != factor.extrude %} M221 S{(factor.extrude*100)|round(0)} {% endif %}
+	{% if not tl.restore.absolute.coordinates %} G91 {% endif %}
+	{% endif %}
+
+[gcode_macro HYPERLAPSE]
+description = Start/Stop a hyperlapse recording
+variable_cycle = 0
+variable_run = False
+gcode = 
+	{% set cycle = params.CYCLE|default(30)|int %}
+	{% if params.ACTION and params.ACTION|lower == 'start' %}
+	{action_respond_info("Hyperlapse: frames started (Cycle %d sec)" % cycle)}
+	SET_GCODE_VARIABLE MACRO=HYPERLAPSE VARIABLE=run VALUE=True
+	SET_GCODE_VARIABLE MACRO=HYPERLAPSE VARIABLE=cycle VALUE={cycle}
+	UPDATE_DELAYED_GCODE ID=_HYPERLAPSE_LOOP DURATION={cycle}
+	TIMELAPSE_TAKE_FRAME HYPERLAPSE=True
+	{% elif params.ACTION and params.ACTION|lower == 'stop' %}
+	{% if run %}{action_respond_info("Hyperlapse: frames stopped")}{% endif %}
+	SET_GCODE_VARIABLE MACRO=HYPERLAPSE VARIABLE=run VALUE=False
+	UPDATE_DELAYED_GCODE ID=_HYPERLAPSE_LOOP DURATION=0
+	{% else %}
+	{action_raise_error("Hyperlapse: No valid input parameter
+	Use:
+	- HYPERLAPSE ACTION=START [CYCLE=time]
+	- HYPERLAPSE ACTION=STOP")}
+	{% endif %}
+
+[delayed_gcode _HYPERLAPSE_LOOP]
+gcode = 
+	UPDATE_DELAYED_GCODE ID=_HYPERLAPSE_LOOP DURATION={printer["gcode_macro HYPERLAPSE"].cycle}
+	TIMELAPSE_TAKE_FRAME HYPERLAPSE=True
+
+[gcode_macro TIMELAPSE_RENDER]
+description = Render Timelapse video and wait for the result
+variable_render = False
+variable_run_identifier = 0
+gcode = 
+	{action_respond_info("Timelapse: Rendering started")}
+	{action_call_remote_method("timelapse_render", byrendermacro="True")}
+	SET_GCODE_VARIABLE MACRO=TIMELAPSE_RENDER VARIABLE=render VALUE=True
+	{printer.configfile.settings['gcode_macro pause'].rename_existing}
+	UPDATE_DELAYED_GCODE ID=_WAIT_TIMELAPSE_RENDER DURATION=0.5
+
+[delayed_gcode _WAIT_TIMELAPSE_RENDER]
+gcode = 
+	{% set ri = printer['gcode_macro TIMELAPSE_RENDER'].run_identifier % 4 %}
+	SET_GCODE_VARIABLE MACRO=TIMELAPSE_RENDER VARIABLE=run_identifier VALUE={ri + 1}
+	{% if printer['gcode_macro TIMELAPSE_RENDER'].render %}
+	M117 Rendering {['-','\\','|','/'][ri]}
+	UPDATE_DELAYED_GCODE ID=_WAIT_TIMELAPSE_RENDER DURATION=0.5
+	{% else %}
+	{action_respond_info("Timelapse: Rendering finished")}
+	M117
+	{printer.configfile.settings['gcode_macro resume'].rename_existing}
+	{% endif %}
+
+[gcode_macro TEST_STREAM_DELAY]
+description = Helper macro to find stream and park delay
+gcode = 
+	{% set min = printer.toolhead.axis_minimum %}
+	{% set max = printer.toolhead.axis_maximum %}
+	{% set act = printer.toolhead.position %}
+	{% set tl = printer['gcode_macro TIMELAPSE_TAKE_FRAME'] %}
+	{% if act.z > 5.0 %}
+	G0 X{min.x + 5.0} F{tl.speed.travel|int * 60}
+	G0 X{(max.x-min.x)/2}
+	G4 P{tl.park.time|float * 1000}
+	_TIMELAPSE_NEW_FRAME HYPERLAPSE=FALSE
+	G0 X{max.x - 5.0}
+	{% else %}
+	{action_raise_error("Toolhead z %.3f to low. Please place head above z = 5.0" % act.z)}
+	{% endif %}
+
+[gcode_macro INPUT_SHAPER_Y]
+gcode = 
+	G28
+	G1 Z50 F500
+	SHAPER_CALIBRATE AXIS=Y
+	SAVE_CONFIG
+
+[gcode_macro INPUT_SHAPER_X]
+gcode = 
+	G28
+	G1 Z50 F500
+	SHAPER_CALIBRATE AXIS=X
+	SAVE_CONFIG
+
+[gcode_macro SET_ACTIVE_SPOOL]
+gcode = 
+	{% if params.ID %}
+	{% set id = params.ID|int %}
+	{action_call_remote_method(
+	"spoolman_set_active_spool",
+	spool_id=id
+	)}
+	{% else %}
+	{action_respond_info("Parameter 'ID' is required")}
+	{% endif %}
+
+[gcode_macro CLEAR_ACTIVE_SPOOL]
+gcode = 
+	{action_call_remote_method(
+	"spoolman_set_active_spool",
+	spool_id=None
+	)}
+
+[gcode_macro PRINT_LAYER]
+description = Log la couche en cours dans la console Klipper
+variable_layer = 0
+gcode = 
+	{% set layer = params.layer|default(0)|int %}
+	{% set message = "Layer %d started"|format(layer) %}
+	SET_GCODE_VARIABLE MACRO=PRINT_LAYER VARIABLE=layer VALUE={layer}
+	M118 {message}
+
+[gcode_macro update_git]
+gcode = 
+	{% set message = params.MESSAGE|default() %}
+	{% if message %}
+	RUN_SHELL_COMMAND CMD=update_git_script_message PARAMS="'{params.MESSAGE}'"
+	{% else %}
+	RUN_SHELL_COMMAND CMD=update_git_script
+	{% endif %}
+
+[gcode_shell_command update_git_script]
+command = bash -c "bash $HOME/klipper-backup/script.sh"
+timeout = 90.0
+verbose = True
+
+[gcode_shell_command update_git_script_message]
+command = bash -c "bash $HOME/klipper-backup/script.sh -c \"$0\""
+timeout = 90.0
+verbose = True
+
+[mcu]
+serial = /dev/ttyS0
+baud = 250000
+restart_method = command
+
+[printer]
+kinematics = cartesian
+max_velocity = 250
+max_accel = 3000
+max_z_velocity = 8
+max_z_accel = 120
+square_corner_velocity = 5.0
+minimum_cruise_ratio = 0.0
+
+[gcode_arcs]
+
+[exclude_object]
+
+[firmware_retraction]
+
+[force_move]
+enable_force_move = True
+
+[idle_timeout]
+timeout = 2100
+
+[gcode_macro PRINT_START]
+gcode = 
+	Frame_Light_ON
+	Part_Light_ON
+	G92 E0
+	G90
+	BED_MESH_CLEAR
+	
+	{% set BED_TEMP = params.BED_TEMP|default(70)|float %}
+	{% set BED_HEAT_SOAK_MINUTES = params.BED_HEAT_SOAK_MINUTES|default(0)|float %}
+	{% set BED_MESH = params.BED_MESH|default('adaptive')|string %}
+	{% set EXTRUDER_TEMP = params.EXTRUDER_TEMP|default(230)|float %}
+	
+	{% set TOTAL_LAYER = params.TOTAL_LAYER|default(0)|int %}
+	SET_PRINT_STATS_INFO TOTAL_LAYER={TOTAL_LAYER}
+	SET_GCODE_VARIABLE MACRO=print_globals VARIABLE=total_layer VALUE={TOTAL_LAYER}
+	
+	
+	SET_BED_TEMPERATURE TARGET={BED_TEMP}
+	BED_TEMPERATURE_WAIT MINIMUM={BED_TEMP-2} MAXIMUM={BED_TEMP+4}
+	{% if BED_HEAT_SOAK_MINUTES > 0 %}
+	RESPOND MSG="Waiting {BED_HEAT_SOAK_MINUTES} minutes for the bed to settle."
+	G4 P{BED_HEAT_SOAK_MINUTES * 60000}
+	{% endif %}
+	CG28
+	{% if BED_MESH == 'full' %}
+	BED_MESH_CALIBRATE
+	{% elif BED_MESH == 'adaptive' %}
+	BED_MESH_CALIBRATE ADAPTIVE=1
+	{% elif BED_MESH != 'none' %}
+	BED_MESH_PROFILE LOAD={BED_MESH}
+	{% endif %}
+	Smart_Park
+	SET_FILAMENT_SENSOR SENSOR=filament_sensor ENABLE=1
+	SET_HEATER_TEMPERATURE HEATER=extruder TARGET={EXTRUDER_TEMP}
+	TEMPERATURE_WAIT SENSOR=extruder MINIMUM={EXTRUDER_TEMP-4} MAXIMUM={EXTRUDER_TEMP+10}
+	LINE_PURGE
+	G92 E0
+	G1 Z2.0 F3000
+	M117 Printing
+
+[gcode_macro print_globals]
+variable_total_layer = 0
+gcode = 
+
+[gcode_macro PRINT_END]
+gcode = 
+	Frame_Light_OFF
+	Part_Light_OFF
+	M400
+	TURN_OFF_HEATERS
+	G92 E0
+	G91
+	G1 E-2 F2700
+	G1 X5 Y5 F3000
+	G1 E-2 Z0.2 F1600
+	G1 Z4 F3000
+	G90
+	G1 X0 Y415
+	M107
+	M84
+	SET_FILAMENT_SENSOR SENSOR=filament_sensor ENABLE=0
+	RESPOND MSG="Total layer count: {printer["gcode_macro print_globals"].total_layer}"
+	M117
+
+[filament_switch_sensor filament_sensor]
+pause_on_runout = True
+insert_gcode = 
+	M117 Insert Detected
+runout_gcode = 
+	M117 Runout Detected
+	UNLOAD_FILAMENT
+event_delay = 3.0
+pause_delay = 1.0
+switch_pin = PA12
+
+[delayed_gcode DISABLE_FILAMENT_SENSOR]
+initial_duration = 1
+gcode = 
+	SET_FILAMENT_SENSOR SENSOR=filament_sensor ENABLE=0
+
+[gcode_macro M600]
+description = Pause for colour change
+gcode = 
+	PAUSE
+	UNLOAD_FILAMENT
+
+[gcode_macro LOAD_FILAMENT]
+variable_prev_temp = 220
+variable_load_distance = 25
+variable_purge_distance = 30
+gcode = 
+	{% set target_temp = prev_temp|int if prev_temp >= 200 else 220 %}
+	SET_HEATER_TEMPERATURE HEATER=extruder TARGET={target_temp}
+	TEMPERATURE_WAIT SENSOR=extruder MINIMUM={target_temp - 4} MAXIMUM={target_temp + 40}
+	{% set speed = params.SPEED|default(300) %}
+	{% set max_velocity = printer.configfile.settings['extruder'].max_extrude_only_velocity * 30 %}
+	SAVE_GCODE_STATE NAME=load_state
+	G91
+	G92 E0
+	G1 E{load_distance} F{max_velocity}
+	G1 E{purge_distance} F{speed}
+	RESTORE_GCODE_STATE NAME=load_state
+
+[gcode_macro UNLOAD_FILAMENT]
+variable_prev_temp = 220
+variable_unload_distance = 55
+variable_purge_distance = 15
+gcode = 
+	{% set target_temp = prev_temp|int if prev_temp >= 200 else 220 %}
+	SET_HEATER_TEMPERATURE HEATER=extruder TARGET={target_temp}
+	TEMPERATURE_WAIT SENSOR=extruder MINIMUM={target_temp - 4} MAXIMUM={target_temp + 40}
+	{% set speed = params.SPEED|default(300) %}
+	{% set max_velocity = printer.configfile.settings['extruder'].max_extrude_only_velocity * 30 %}
+	SAVE_GCODE_STATE NAME=unload_state
+	G91
+	G92 E0
+	G1 E{purge_distance} F{speed}
+	G1 E-{unload_distance} F{max_velocity}
+	RESTORE_GCODE_STATE NAME=unload_state
+
+[stepper_x]
+step_pin = PC14
+dir_pin = PC13
+enable_pin = !PC15
+microsteps = 64
+rotation_distance = 40
+full_steps_per_rotation = 200
+endstop_pin = tmc2209_stepper_x:virtual_endstop
+position_min = -2
+position_endstop = 0
+position_max = 430
+homing_speed = 50
+homing_retract_dist = 0
+homing_positive_dir = false
+
+[stepper_y]
+step_pin = PB4
+dir_pin = PB3
+enable_pin = !PC15
+microsteps = 64
+rotation_distance = 40
+full_steps_per_rotation = 200
+endstop_pin = tmc2209_stepper_y:virtual_endstop
+position_min = -2
+position_endstop = 0
+position_max = 430
+homing_speed = 50
+homing_retract_dist = 0
+homing_positive_dir = false
+
+[stepper_z]
+step_pin = PC10
+dir_pin = !PA13
+enable_pin = !PC11
+microsteps = 64
+rotation_distance = 8
+full_steps_per_rotation = 200
+endstop_pin = probe:z_virtual_endstop
+position_max = 505
+position_min = -5
+homing_speed = 8
+second_homing_speed = 3
+homing_retract_dist = 5
+
+[tmc2209 stepper_x]
+uart_pin = PB9
+run_current = 1.0
+interpolate = True
+stealthchop_threshold = 999999
+driver_sgthrs = 90
+diag_pin = ^PC0
+
+[tmc2209 stepper_y]
+uart_pin = PD2
+run_current = 1.1
+interpolate = True
+stealthchop_threshold = 999999
+driver_sgthrs = 80
+diag_pin = ^PB8
+
+[tmc2209 stepper_z]
+uart_pin = PC5
+run_current = 0.8
+interpolate = True
+
+[tmc2209 extruder]
+uart_pin = PC4
+run_current = 0.8
+interpolate = false
+
+[extruder]
+step_pin = PA5
+dir_pin = !PA6
+enable_pin = !PA4
+microsteps = 32
+rotation_distance = 29.0
+gear_ratio = 52:10
+full_steps_per_rotation = 200
+nozzle_diameter = 0.400
+filament_diameter = 1.750
+min_temp = 0
+max_temp = 330
+heater_pin = PA7
+sensor_type = NTC 100K MGB18-104F39050L32
+sensor_pin = PA1
+max_power = 1
+control = pid
+pid_kp = 25.718
+pid_ki = 3.297
+pid_kd = 50.150
+pressure_advance = 0.02725
+pressure_advance_smooth_time = 0.02
+max_extrude_cross_section = 5
+instantaneous_corner_velocity = 5.0
+max_extrude_only_distance = 100
+max_extrude_only_velocity = 45
+max_extrude_only_accel = 2000
+step_pulse_duration = 0.000002
+
+[verify_heater extruder]
+max_error = 30
+check_gain_time = 10
+hysteresis = 10
+heating_gain = 2
+
+[heater_bed]
+heater_pin = PB10
+sensor_type = NTC 100K MGB18-104F39050L32
+sensor_pin = PA0
+max_power = 1.0
+control = pid
+pid_kp = 75.397
+pid_ki = 0.823
+pid_kd = 1727.531
+min_temp = 0
+max_temp = 120
+pwm_cycle_time = 0.3
+
+[verify_heater heater_bed]
+max_error = 120
+check_gain_time = 120
+hysteresis = 10
+heating_gain = 2
+
+[gcode_macro SET_BED_TEMPERATURE]
+gcode = 
+	SET_HEATER_TEMPERATURE HEATER=heater_bed TARGET={params.TARGET}
+
+[gcode_macro BED_TEMPERATURE_WAIT]
+gcode = 
+	{% if params.MINIMUM is defined and params.MAXIMUM is defined %}
+	TEMPERATURE_WAIT SENSOR=heater_bed MINIMUM={params.MINIMUM} MAXIMUM={params.MAXIMUM}
+	{% elif params.MINIMUM is defined %}
+	TEMPERATURE_WAIT SENSOR=heater_bed MINIMUM={params.MINIMUM}
+	{% elif params.MAXIMUM is defined %}
+	TEMPERATURE_WAIT SENSOR=heater_bed MAXIMUM={params.MAXIMUM}
+	{% else %}
+	RESPOND TYPE=error MSG="Error on 'BED_TEMPERATURE_WAIT': missing MINIMUM or MAXIMUM."
+	{% endif %}
+
+[probe]
+pin = ^PA11
+x_offset = -24.25
+y_offset = 20.45
+speed = 6
+samples = 3
+samples_result = median
+sample_retract_dist = 3.0
+samples_tolerance = 0.025
+samples_tolerance_retries = 3
+z_offset = 0.820
+
+[bed_mesh]
+speed = 150
+horizontal_move_z = 5
+mesh_min = 10,21
+mesh_max = 397,404
+probe_count = 11,11
+algorithm = bicubic
+bicubic_tension = 0.2
+mesh_pps = 4, 4
+fade_start = 1.0
+fade_end = 10.0
+
+[output_pin Frame_Light]
+pin = rpi:gpiochip2/gpio2
+
+[output_pin Part_Light]
+pin = rpi:gpiochip2/gpio15
+
+[gcode_macro Frame_Light_ON]
+gcode = 
+	SET_PIN PIN=Frame_Light VALUE=1
+
+[gcode_macro Frame_Light_OFF]
+gcode = 
+	SET_PIN PIN=Frame_Light VALUE=0
+
+[gcode_macro Part_Light_ON]
+gcode = 
+	SET_PIN PIN=Part_Light VALUE=1
+
+[gcode_macro Part_Light_OFF]
+gcode = 
+	SET_PIN PIN=Part_Light VALUE=0
+
+[gcode_shell_command zigbee_off]
+command = /home/mks/scripts/zigbee_off.sh
+timeout = 2.
+verbose = True
+
+[gcode_shell_command zigbee_on]
+command = /home/mks/scripts/zigbee_on.sh
+timeout = 2.
+verbose = True
+
+[gcode_macro ZIGBEE_OFF]
+gcode = 
+	RUN_SHELL_COMMAND CMD=zigbee_off
+	RESPOND PREFIX="ZIGBEE" MSG="Zigbee is now OFF"
+
+[gcode_macro ZIGBEE_ON]
+gcode = 
+	RUN_SHELL_COMMAND CMD=zigbee_on
+	RESPOND PREFIX="ZIGBEE" MSG="Zigbee is now ON"
+
+[pwm_cycle_time beeper]
+pin = PA2
+value = 0
+shutdown_value = 0
+cycle_time = 0.0005
+
+[gcode_macro M300]
+gcode = 
+	{% set S = params.S|default(2000)|int %}
+	{% set P = params.P|default(100)|int %}
+	SET_PIN PIN=beeper VALUE=0.8 CYCLE_TIME={ 1.0/S if S > 0 else 1 }
+	G4 P{P}
+	SET_PIN PIN=beeper VALUE=0
+
+[gcode_macro PAUSE_TUNE]
+gcode = 
+	M300 S784 P300
+	M300 S587 P600
+
+[gcode_macro END_TUNE]
+gcode = 
+	M300 S392 P250
+	M300 S494 P250
+	M300 S587 P250
+	M300 S523 P300
+
+[controller_fan heatbreak+mainboard_fan]
+pin = PC7
+shutdown_speed = 1
+
+[fan]
+pin = PB7
+
+[delayed_gcode start_fan_at_idle_speed]
+initial_duration = 5.
+gcode = 
+	
+	SET_HEATER_TEMPERATURE HEATER=heater_bed TARGET=1
+	G4 P2000
+	SET_HEATER_TEMPERATURE HEATER=heater_bed TARGET=0
+
+[gcode_macro CG28]
+gcode = 
+	{% if "xyz" not in printer.toolhead.homed_axes %}
+	G28
+	{% else %}
+	{% endif %}
+
+[safe_z_home]
+home_xy_position = 239.75,194.55
+speed = 100
+z_hop = 10
+z_hop_speed = 5
+
+[axis_twist_compensation]
+calibrate_start_x = 25
+calibrate_end_x = 395
+calibrate_y = 210
+
+[gcode_macro Axis_Twist_Comp_Tune]
+gcode = 
+	CG28
+	AXIS_TWIST_COMPENSATION_CALIBRATE
+
+[screws_tilt_adjust]
+screw1 = 239.25,254.55
+screw1_name = support de lit arrière central (ajustement avec cale)
+screw2 = 239.25,134.55
+screw2_name = support de lit avant central (ajustement avec cale)
+screw3 = 56.75,377.05
+screw3_name = vis arrière gauche
+screw4 = 56.75,194.55
+screw4_name = vis centrale gauche
+screw5 = 56.75,12.05
+screw5_name = vis avant gauche
+screw6 = 421.75,12.05
+screw6_name = vis avant droite
+screw7 = 421.75,194.55
+screw7_name = vis centrale droite
+screw8 = 421.75,377.05
+screw8_name = vis arrière droite
+horizontal_move_z = 5
+speed = 150
+screw_thread = CW-M4
+
+[gcode_macro Bed_Level_Screws_Tune]
+gcode = 
+	BED_MESH_CLEAR
+	SET_BED_TEMPERATURE TARGET=70
+	BED_TEMPERATURE_WAIT MINIMUM=68 MAXIMUM=75
+	CG28
+	SCREWS_TILT_CALCULATE
+
+[gcode_macro Calibrate_Probe_Z_Offset]
+gcode = 
+	CG28
+	PROBE_CALIBRATE
+
+[gcode_macro Auto_Full_Bed_Level]
+gcode = 
+	RESPOND PREFIX="info" MSG="Running Custom Bed Leveling Macro"
+	BED_MESH_CLEAR
+	SET_BED_TEMPERATURE TARGET=70
+	BED_TEMPERATURE_WAIT MINIMUM=68 MAXIMUM=75
+	CG28
+	BED_MESH_CALIBRATE
+
+[gcode_macro PID_Tune_EXTRUDER]
+gcode = 
+	{% set temperature = params.TEMPERATURE|default(230) %}
+	CG28
+	M106 S255
+	PID_CALIBRATE HEATER=extruder TARGET={temperature}
+	SAVE_CONFIG
+
+[gcode_macro PID_Tune_BED]
+gcode = 
+	{% set temperature = params.TEMPERATURE|default(70) %}
+	CG28
+	M106 S255
+	PID_CALIBRATE HEATER=heater_bed TARGET={temperature}
+	SAVE_CONFIG
+
+[mcu rpi]
+serial = /tmp/klipper_host_mcu
+
+[adxl345 x]
+cs_pin = rpi:None
+spi_bus = spidev0.0
+axes_map = x,z,-y
+
+[adxl345 y]
+cs_pin = rpi:None
+spi_bus = spidev0.1
+axes_map = -x,-y,-z
+
+[resonance_tester]
+accel_chip_x = adxl345 x
+accel_chip_y = adxl345 y
+probe_points = 
+	215, 215, 20
+
+[input_shaper]
+shaper_type_x = mzv
+shaper_freq_x = 68.6
+shaper_type_y = mzv
+shaper_freq_y = 24.0
+
+[bed_mesh default]
+version = 1
+points = 
+	-0.017500, -0.032500, -0.036875, -0.023125, -0.045625, -0.038750, -0.040000, -0.043125, -0.020625, -0.027500, 0.010625
+	-0.006875, -0.016875, -0.019375, -0.028750, -0.043125, -0.035625, -0.049375, -0.057500, -0.040000, -0.053125, -0.006250
+	-0.049375, -0.047500, -0.053125, -0.043125, -0.037500, -0.045000, -0.042500, -0.047500, -0.054375, -0.070000, -0.033125
+	-0.007500, -0.004375, 0.001250, -0.001875, -0.000625, -0.013125, -0.019375, -0.028125, -0.041875, -0.057500, -0.037500
+	0.006250, 0.012500, 0.011250, 0.021875, 0.030000, 0.024375, 0.018750, 0.006875, -0.002500, -0.031250, -0.006875
+	0.016875, 0.016875, 0.020000, 0.025000, 0.031875, 0.029375, 0.021250, 0.005625, -0.000625, -0.025625, 0.015625
+	0.021250, 0.031875, 0.028750, 0.030625, 0.053750, 0.058750, 0.048125, 0.027500, 0.020000, -0.002500, 0.019375
+	0.019375, 0.023750, 0.026875, 0.029375, 0.046875, 0.059375, 0.038125, 0.020000, 0.013125, 0.004375, 0.030000
+	0.000000, 0.010000, 0.016250, 0.011250, 0.036250, 0.051250, 0.041250, 0.020000, 0.015000, 0.005000, 0.031250
+	0.049375, 0.042500, 0.055000, 0.053125, 0.060000, 0.068125, 0.056250, 0.032500, 0.031875, 0.009375, 0.040000
+	0.077500, 0.083125, 0.080625, 0.071250, 0.071250, 0.083125, 0.071250, 0.053750, 0.041250, 0.016875, 0.051250
+x_count = 11
+y_count = 11
+mesh_x_pps = 4
+mesh_y_pps = 4
+algo = bicubic
+tension = 0.2
+min_x = 10.0
+max_x = 397.0
+min_y = 21.0
+max_y = 403.90000000000003
+=======================
+Extruder max_extrude_ratio=2.078758
+mcu 'mcu': Starting serial connect
+Loaded MCU 'mcu' 130 commands (v0.12.0-490-g5493bdfb4 / gcc: (15:12.2.rel1-1) 12.2.1 20221205 binutils: (2.40-2+18+b1) 2.40)
+MCU 'mcu' config: ADC_MAX=4095 BUS_PINS_i2c1=PB6,PB7 BUS_PINS_i2c1a=PB8,PB9 BUS_PINS_i2c2=PB10,PB11 BUS_PINS_i2c3=PA8,PC9 BUS_PINS_sdio=PC12,PD2,PC8,PC9,PC10,PC11 BUS_PINS_spi1=PA6,PA7,PA5 BUS_PINS_spi1a=PB4,PB5,PB3 BUS_PINS_spi2=PB14,PB15,PB13 BUS_PINS_spi2a=PC2,PC3,PB10 BUS_PINS_spi3=PB4,PB5,PB3 BUS_PINS_spi3a=PC11,PC12,PC10 BUS_PINS_spi4=PE13,PE14,PE12 CLOCK_FREQ=84000000 MCU=stm32f401xc PWM_MAX=255 RECEIVE_WINDOW=192 RESERVE_PINS_crystal=PH0,PH1 RESERVE_PINS_serial=PA10,PA9 SERIAL_BAUD=250000 STATS_SUMSQ_BASE=256 STEPPER_OPTIMIZED_EDGE=11 STEPPER_STEP_BOTH_EDGE=1
+mcu 'rpi': Starting connect
+webhooks client 281473315401296: New connection
+webhooks client 281473315401296: Client info {'program': 'Moonraker', 'version': 'v0.9.3-129-g058517b'}
+Loaded MCU 'rpi' 124 commands (v0.12.0-490-g5493bdfb4 / gcc: (Debian 12.2.0-14) 12.2.0 binutils: (GNU Binutils for Debian) 2.40)
+MCU 'rpi' config: ADC_MAX=4095 CLOCK_FREQ=50000000 MCU=linux PCA9685_MAX=4096 PWM_MAX=32768 STATS_SUMSQ_BASE=256 STEPPER_STEP_BOTH_EDGE=1
+Sending MCU 'mcu' printer configuration...
+Configured MCU 'mcu' (1024 moves)
+Sending MCU 'rpi' printer configuration...
+Configured MCU 'rpi' (1024 moves)
+Enabling TMC virtual enable for 'stepper_x'
+Enabling TMC virtual enable for 'stepper_y'
+Starting heater checks for extruder
+Starting heater checks for heater_bed
+bed_mesh: generated points
+Index |  Tool Adjusted  |   Probe
+  0   | (34.2, 0.6)     | (10.0, 21.0)
+  1   | (73.0, 0.6)     | (48.7, 21.0)
+  2   | (111.7, 0.6)    | (87.4, 21.0)
+  3   | (150.4, 0.6)    | (126.1, 21.0)
+  4   | (189.1, 0.6)    | (164.8, 21.0)
+  5   | (227.8, 0.6)    | (203.5, 21.0)
+  6   | (266.5, 0.6)    | (242.2, 21.0)
+  7   | (305.2, 0.6)    | (280.9, 21.0)
+  8   | (343.9, 0.6)    | (319.6, 21.0)
+  9   | (382.6, 0.6)    | (358.3, 21.0)
+  10  | (421.2, 0.6)    | (397.0, 21.0)
+  11  | (421.2, 38.8)   | (397.0, 59.3)
+  12  | (382.6, 38.8)   | (358.3, 59.3)
+  13  | (343.9, 38.8)   | (319.6, 59.3)
+  14  | (305.1, 38.8)   | (280.9, 59.3)
+  15  | (266.4, 38.8)   | (242.2, 59.3)
+  16  | (227.8, 38.8)   | (203.5, 59.3)
+  17  | (189.0, 38.8)   | (164.8, 59.3)
+  18  | (150.3, 38.8)   | (126.1, 59.3)
+  19  | (111.6, 38.8)   | (87.4, 59.3)
+  20  | (72.9, 38.8)    | (48.7, 59.3)
+  21  | (34.2, 38.8)    | (10.0, 59.3)
+  22  | (34.2, 77.1)    | (10.0, 97.6)
+  23  | (73.0, 77.1)    | (48.7, 97.6)
+  24  | (111.7, 77.1)   | (87.4, 97.6)
+  25  | (150.4, 77.1)   | (126.1, 97.6)
+  26  | (189.1, 77.1)   | (164.8, 97.6)
+  27  | (227.8, 77.1)   | (203.5, 97.6)
+  28  | (266.5, 77.1)   | (242.2, 97.6)
+  29  | (305.2, 77.1)   | (280.9, 97.6)
+  30  | (343.9, 77.1)   | (319.6, 97.6)
+  31  | (382.6, 77.1)   | (358.3, 97.6)
+  32  | (421.2, 77.1)   | (397.0, 97.6)
+  33  | (421.2, 115.4)  | (397.0, 135.9)
+  34  | (382.6, 115.4)  | (358.3, 135.9)
+  35  | (343.9, 115.4)  | (319.6, 135.9)
+  36  | (305.1, 115.4)  | (280.9, 135.9)
+  37  | (266.4, 115.4)  | (242.2, 135.9)
+  38  | (227.8, 115.4)  | (203.5, 135.9)
+  39  | (189.0, 115.4)  | (164.8, 135.9)
+  40  | (150.3, 115.4)  | (126.1, 135.9)
+  41  | (111.6, 115.4)  | (87.4, 135.9)
+  42  | (72.9, 115.4)   | (48.7, 135.9)
+  43  | (34.2, 115.4)   | (10.0, 135.9)
+  44  | (34.2, 153.7)   | (10.0, 174.2)
+  45  | (73.0, 153.7)   | (48.7, 174.2)
+  46  | (111.7, 153.7)  | (87.4, 174.2)
+  47  | (150.4, 153.7)  | (126.1, 174.2)
+  48  | (189.1, 153.7)  | (164.8, 174.2)
+  49  | (227.8, 153.7)  | (203.5, 174.2)
+...points 50 through 120 truncated
+Stats 32.6: gcodein=0 mcu: mcu_awake=0.000 mcu_task_avg=0.000000 mcu_task_stddev=0.000000 bytes_write=2655 bytes_read=6450 bytes_retransmit=0 bytes_invalid=0 send_seq=222 receive_seq=222 retransmit_seq=0 srtt=0.001 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=84002148 rpi: mcu_awake=0.005 mcu_task_avg=0.000033 mcu_task_stddev=0.000028 bytes_write=950 bytes_read=4912 bytes_retransmit=0 bytes_invalid=0 send_seq=125 receive_seq=125 retransmit_seq=0 srtt=0.000 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=50001989 adj=50001029 heater_bed: target=0 temp=0.0 pwm=0.000 print_time=0.000 buffer_time=0.000 print_stall=0 extruder: target=0 temp=0.0 pwm=0.000 sysload=2.88 cputime=4.776 memavail=706264
+webhooks: registering remote method 'shutdown_machine' for connection id: 281473315401296
+webhooks: registering remote method 'reboot_machine' for connection id: 281473315401296
+webhooks: registering remote method 'pause_job_queue' for connection id: 281473315401296
+webhooks: registering remote method 'start_job_queue' for connection id: 281473315401296
+webhooks: registering remote method 'spoolman_set_active_spool' for connection id: 281473315401296
+Stats 33.6: gcodein=0 mcu: mcu_awake=0.000 mcu_task_avg=0.000000 mcu_task_stddev=0.000000 bytes_write=2661 bytes_read=6556 bytes_retransmit=0 bytes_invalid=0 send_seq=223 receive_seq=223 retransmit_seq=0 srtt=0.001 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=84001842 rpi: mcu_awake=0.005 mcu_task_avg=0.000033 mcu_task_stddev=0.000028 bytes_write=956 bytes_read=4928 bytes_retransmit=0 bytes_invalid=0 send_seq=126 receive_seq=126 retransmit_seq=0 srtt=0.000 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=50001042 adj=50000749 heater_bed: target=0 temp=21.6 pwm=0.000 print_time=0.000 buffer_time=0.000 print_stall=0 extruder: target=0 temp=21.9 pwm=0.000 sysload=2.88 cputime=4.803 memavail=705800
+Stats 34.6: gcodein=0 mcu: mcu_awake=0.000 mcu_task_avg=0.000000 mcu_task_stddev=0.000000 bytes_write=2667 bytes_read=6677 bytes_retransmit=0 bytes_invalid=0 send_seq=224 receive_seq=224 retransmit_seq=0 srtt=0.001 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=84001829 rpi: mcu_awake=0.005 mcu_task_avg=0.000033 mcu_task_stddev=0.000028 bytes_write=962 bytes_read=4944 bytes_retransmit=0 bytes_invalid=0 send_seq=127 receive_seq=127 retransmit_seq=0 srtt=0.000 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=50000171 adj=49999611 heater_bed: target=0 temp=21.7 pwm=0.000 print_time=0.000 buffer_time=0.000 print_stall=0 extruder: target=0 temp=21.9 pwm=0.000 sysload=2.88 cputime=4.814 memavail=706184
+Stats 35.6: gcodein=0 mcu: mcu_awake=0.000 mcu_task_avg=0.000000 mcu_task_stddev=0.000000 bytes_write=2673 bytes_read=6798 bytes_retransmit=0 bytes_invalid=0 send_seq=225 receive_seq=225 retransmit_seq=0 srtt=0.001 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=84002126 rpi: mcu_awake=0.005 mcu_task_avg=0.000033 mcu_task_stddev=0.000028 bytes_write=968 bytes_read=4960 bytes_retransmit=0 bytes_invalid=0 send_seq=128 receive_seq=128 retransmit_seq=0 srtt=0.000 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=50000058 adj=49998184 heater_bed: target=0 temp=21.6 pwm=0.000 print_time=0.000 buffer_time=0.000 print_stall=0 extruder: target=0 temp=21.9 pwm=0.000 sysload=2.73 cputime=4.827 memavail=702252
+Stats 36.6: gcodein=0 mcu: mcu_awake=0.006 mcu_task_avg=0.000019 mcu_task_stddev=0.000020 bytes_write=2679 bytes_read=6919 bytes_retransmit=0 bytes_invalid=0 send_seq=226 receive_seq=226 retransmit_seq=0 srtt=0.001 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=84001939 rpi: mcu_awake=0.005 mcu_task_avg=0.000033 mcu_task_stddev=0.000028 bytes_write=974 bytes_read=4976 bytes_retransmit=0 bytes_invalid=0 send_seq=129 receive_seq=129 retransmit_seq=0 srtt=0.000 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=50000393 adj=49997806 heater_bed: target=0 temp=21.7 pwm=0.000 print_time=0.000 buffer_time=0.000 print_stall=0 extruder: target=0 temp=21.9 pwm=0.000 sysload=2.73 cputime=4.838 memavail=683272
+Stats 37.6: gcodein=0 mcu: mcu_awake=0.006 mcu_task_avg=0.000019 mcu_task_stddev=0.000020 bytes_write=2685 bytes_read=7040 bytes_retransmit=0 bytes_invalid=0 send_seq=227 receive_seq=227 retransmit_seq=0 srtt=0.001 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=84001817 rpi: mcu_awake=0.000 mcu_task_avg=0.000008 mcu_task_stddev=0.000012 bytes_write=980 bytes_read=5005 bytes_retransmit=0 bytes_invalid=0 send_seq=130 receive_seq=130 retransmit_seq=0 srtt=0.000 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=50000323 adj=49999063 heater_bed: target=1 temp=21.6 pwm=0.000 print_time=44.118 buffer_time=2.155 print_stall=0 extruder: target=0 temp=21.9 pwm=0.000 sysload=2.73 cputime=4.849 memavail=677684
+Stats 38.6: gcodein=0 mcu: mcu_awake=0.006 mcu_task_avg=0.000019 mcu_task_stddev=0.000020 bytes_write=2691 bytes_read=7161 bytes_retransmit=0 bytes_invalid=0 send_seq=228 receive_seq=228 retransmit_seq=0 srtt=0.001 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=84001764 rpi: mcu_awake=0.000 mcu_task_avg=0.000008 mcu_task_stddev=0.000012 bytes_write=986 bytes_read=5021 bytes_retransmit=0 bytes_invalid=0 send_seq=131 receive_seq=131 retransmit_seq=0 srtt=0.000 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=50000345 adj=49999181 heater_bed: target=1 temp=21.6 pwm=0.000 print_time=44.118 buffer_time=1.154 print_stall=0 extruder: target=0 temp=21.9 pwm=0.000 sysload=2.73 cputime=4.859 memavail=669856
+Stats 39.6: gcodein=0 mcu: mcu_awake=0.006 mcu_task_avg=0.000019 mcu_task_stddev=0.000020 bytes_write=2697 bytes_read=7267 bytes_retransmit=0 bytes_invalid=0 send_seq=229 receive_seq=229 retransmit_seq=0 srtt=0.001 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=84001704 rpi: mcu_awake=0.000 mcu_task_avg=0.000008 mcu_task_stddev=0.000012 bytes_write=992 bytes_read=5037 bytes_retransmit=0 bytes_invalid=0 send_seq=132 receive_seq=132 retransmit_seq=0 srtt=0.000 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=50000407 adj=49999343 heater_bed: target=0 temp=21.6 pwm=0.000 print_time=44.118 buffer_time=0.153 print_stall=0 extruder: target=0 temp=21.9 pwm=0.000 sysload=2.73 cputime=4.867 memavail=667860
+Stats 40.6: gcodein=0 mcu: mcu_awake=0.006 mcu_task_avg=0.000019 mcu_task_stddev=0.000020 bytes_write=2703 bytes_read=7388 bytes_retransmit=0 bytes_invalid=0 send_seq=230 receive_seq=230 retransmit_seq=0 srtt=0.001 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=84001652 rpi: mcu_awake=0.000 mcu_task_avg=0.000008 mcu_task_stddev=0.000012 bytes_write=998 bytes_read=5053 bytes_retransmit=0 bytes_invalid=0 send_seq=133 receive_seq=133 retransmit_seq=0 srtt=0.000 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=50000613 adj=49999291 heater_bed: target=0 temp=21.6 pwm=0.000 print_time=44.118 buffer_time=0.000 print_stall=0 extruder: target=0 temp=21.9 pwm=0.000 sysload=2.75 cputime=4.886 memavail=662844
+Stats 41.6: gcodein=0 mcu: mcu_awake=0.001 mcu_task_avg=0.000009 mcu_task_stddev=0.000007 bytes_write=2709 bytes_read=7522 bytes_retransmit=0 bytes_invalid=0 send_seq=231 receive_seq=231 retransmit_seq=0 srtt=0.001 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=84001606 rpi: mcu_awake=0.000 mcu_task_avg=0.000008 mcu_task_stddev=0.000012 bytes_write=1004 bytes_read=5069 bytes_retransmit=0 bytes_invalid=0 send_seq=134 receive_seq=134 retransmit_seq=0 srtt=0.000 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=50000515 adj=50000069 heater_bed: target=0 temp=21.6 pwm=0.000 print_time=44.118 buffer_time=0.000 print_stall=0 extruder: target=0 temp=21.9 pwm=0.000 sysload=2.75 cputime=4.897 memavail=662608
+Stats 42.6: gcodein=0 mcu: mcu_awake=0.001 mcu_task_avg=0.000009 mcu_task_stddev=0.000007 bytes_write=2715 bytes_read=7628 bytes_retransmit=0 bytes_invalid=0 send_seq=232 receive_seq=232 retransmit_seq=0 srtt=0.001 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=84001599 rpi: mcu_awake=0.000 mcu_task_avg=0.000008 mcu_task_stddev=0.000014 bytes_write=1010 bytes_read=5098 bytes_retransmit=0 bytes_invalid=0 send_seq=135 receive_seq=135 retransmit_seq=0 srtt=0.000 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=50000549 adj=49999723 heater_bed: target=0 temp=21.6 pwm=0.000 print_time=44.118 buffer_time=0.000 print_stall=0 extruder: target=0 temp=21.9 pwm=0.000 sysload=2.75 cputime=4.916 memavail=662364
+Stats 43.6: gcodein=0 mcu: mcu_awake=0.001 mcu_task_avg=0.000009 mcu_task_stddev=0.000007 bytes_write=2721 bytes_read=7749 bytes_retransmit=0 bytes_invalid=0 send_seq=233 receive_seq=233 retransmit_seq=0 srtt=0.001 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=84001590 rpi: mcu_awake=0.000 mcu_task_avg=0.000008 mcu_task_stddev=0.000014 bytes_write=1016 bytes_read=5114 bytes_retransmit=0 bytes_invalid=0 send_seq=136 receive_seq=136 retransmit_seq=0 srtt=0.000 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=50000553 adj=49999822 heater_bed: target=0 temp=21.6 pwm=0.000 print_time=44.118 buffer_time=0.000 print_stall=0 extruder: target=0 temp=21.9 pwm=0.000 sysload=2.75 cputime=4.930 memavail=675792
+Stats 44.6: gcodein=0 mcu: mcu_awake=0.001 mcu_task_avg=0.000009 mcu_task_stddev=0.000007 bytes_write=2727 bytes_read=7870 bytes_retransmit=0 bytes_invalid=0 send_seq=234 receive_seq=234 retransmit_seq=0 srtt=0.001 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=84001589 rpi: mcu_awake=0.000 mcu_task_avg=0.000008 mcu_task_stddev=0.000014 bytes_write=1022 bytes_read=5130 bytes_retransmit=0 bytes_invalid=0 send_seq=137 receive_seq=137 retransmit_seq=0 srtt=0.000 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=50000549 adj=49999802 heater_bed: target=0 temp=21.7 pwm=0.000 print_time=44.118 buffer_time=0.000 print_stall=0 extruder: target=0 temp=21.9 pwm=0.000 sysload=2.75 cputime=4.943 memavail=671036
+Stats 45.6: gcodein=0 mcu: mcu_awake=0.001 mcu_task_avg=0.000009 mcu_task_stddev=0.000007 bytes_write=2733 bytes_read=7976 bytes_retransmit=0 bytes_invalid=0 send_seq=235 receive_seq=235 retransmit_seq=0 srtt=0.001 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=84001580 rpi: mcu_awake=0.000 mcu_task_avg=0.000008 mcu_task_stddev=0.000014 bytes_write=1028 bytes_read=5146 bytes_retransmit=0 bytes_invalid=0 send_seq=138 receive_seq=138 retransmit_seq=0 srtt=0.000 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=50000669 adj=49999739 heater_bed: target=0 temp=21.7 pwm=0.000 print_time=44.118 buffer_time=0.000 print_stall=0 extruder: target=0 temp=21.9 pwm=0.000 sysload=2.61 cputime=4.957 memavail=669132
+Stats 46.6: gcodein=0 mcu: mcu_awake=0.001 mcu_task_avg=0.000009 mcu_task_stddev=0.000007 bytes_write=2739 bytes_read=8102 bytes_retransmit=0 bytes_invalid=0 send_seq=236 receive_seq=236 retransmit_seq=0 srtt=0.001 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=84001634 rpi: mcu_awake=0.000 mcu_task_avg=0.000008 mcu_task_stddev=0.000014 bytes_write=1034 bytes_read=5162 bytes_retransmit=0 bytes_invalid=0 send_seq=139 receive_seq=139 retransmit_seq=0 srtt=0.000 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=50000640 adj=50000239 heater_bed: target=0 temp=21.6 pwm=0.000 print_time=44.118 buffer_time=0.000 print_stall=0 extruder: target=0 temp=21.9 pwm=0.000 sysload=2.61 cputime=4.981 memavail=668184
+Stats 47.6: gcodein=0 mcu: mcu_awake=0.001 mcu_task_avg=0.000009 mcu_task_stddev=0.000007 bytes_write=2745 bytes_read=8215 bytes_retransmit=0 bytes_invalid=0 send_seq=237 receive_seq=237 retransmit_seq=0 srtt=0.001 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=84001623 rpi: mcu_awake=0.000 mcu_task_avg=0.000009 mcu_task_stddev=0.000020 bytes_write=1040 bytes_read=5191 bytes_retransmit=0 bytes_invalid=0 send_seq=140 receive_seq=140 retransmit_seq=0 srtt=0.000 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=50000616 adj=49999835 heater_bed: target=0 temp=21.6 pwm=0.000 print_time=44.118 buffer_time=0.000 print_stall=0 extruder: target=0 temp=21.9 pwm=0.000 sysload=2.61 cputime=4.996 memavail=666816
+Stats 48.6: gcodein=0 mcu: mcu_awake=0.001 mcu_task_avg=0.000009 mcu_task_stddev=0.000007 bytes_write=2751 bytes_read=8314 bytes_retransmit=0 bytes_invalid=0 send_seq=238 receive_seq=238 retransmit_seq=0 srtt=0.001 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=84001645 rpi: mcu_awake=0.000 mcu_task_avg=0.000009 mcu_task_stddev=0.000020 bytes_write=1046 bytes_read=5207 bytes_retransmit=0 bytes_invalid=0 send_seq=141 receive_seq=141 retransmit_seq=0 srtt=0.000 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=50000598 adj=49999715 heater_bed: target=0 temp=21.6 pwm=0.000 print_time=44.118 buffer_time=0.000 print_stall=0 extruder: target=0 temp=21.9 pwm=0.000 sysload=2.61 cputime=5.010 memavail=664660
+Stats 49.6: gcodein=0 mcu: mcu_awake=0.001 mcu_task_avg=0.000009 mcu_task_stddev=0.000007 bytes_write=2757 bytes_read=8432 bytes_retransmit=0 bytes_invalid=0 send_seq=239 receive_seq=239 retransmit_seq=0 srtt=0.001 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=84001640 rpi: mcu_awake=0.000 mcu_task_avg=0.000009 mcu_task_stddev=0.000020 bytes_write=1052 bytes_read=5223 bytes_retransmit=0 bytes_invalid=0 send_seq=142 receive_seq=142 retransmit_seq=0 srtt=0.000 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=50000585 adj=49999543 heater_bed: target=0 temp=21.6 pwm=0.000 print_time=44.118 buffer_time=0.000 print_stall=0 extruder: target=0 temp=21.9 pwm=0.000 sysload=2.61 cputime=5.029 memavail=662644
+Stats 50.6: gcodein=0 mcu: mcu_awake=0.001 mcu_task_avg=0.000009 mcu_task_stddev=0.000007 bytes_write=2763 bytes_read=8553 bytes_retransmit=0 bytes_invalid=0 send_seq=240 receive_seq=240 retransmit_seq=0 srtt=0.001 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=84001631 rpi: mcu_awake=0.000 mcu_task_avg=0.000009 mcu_task_stddev=0.000020 bytes_write=1058 bytes_read=5239 bytes_retransmit=0 bytes_invalid=0 send_seq=143 receive_seq=143 retransmit_seq=0 srtt=0.000 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=50000555 adj=49999509 heater_bed: target=0 temp=21.6 pwm=0.000 print_time=44.118 buffer_time=0.000 print_stall=0 extruder: target=0 temp=21.9 pwm=0.000 sysload=2.48 cputime=5.045 memavail=661580
+Stats 51.6: gcodein=0 mcu: mcu_awake=0.001 mcu_task_avg=0.000009 mcu_task_stddev=0.000007 bytes_write=2769 bytes_read=8672 bytes_retransmit=0 bytes_invalid=0 send_seq=241 receive_seq=241 retransmit_seq=0 srtt=0.001 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=84001617 rpi: mcu_awake=0.000 mcu_task_avg=0.000009 mcu_task_stddev=0.000020 bytes_write=1064 bytes_read=5255 bytes_retransmit=0 bytes_invalid=0 send_seq=144 receive_seq=144 retransmit_seq=0 srtt=0.000 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=50000570 adj=49999409 heater_bed: target=0 temp=21.6 pwm=0.000 print_time=44.118 buffer_time=0.000 print_stall=0 extruder: target=0 temp=21.9 pwm=0.000 sysload=2.48 cputime=5.059 memavail=661644
+Stats 52.6: gcodein=0 mcu: mcu_awake=0.001 mcu_task_avg=0.000009 mcu_task_stddev=0.000007 bytes_write=2775 bytes_read=8793 bytes_retransmit=0 bytes_invalid=0 send_seq=242 receive_seq=242 retransmit_seq=0 srtt=0.001 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=84001611 rpi: mcu_awake=0.000 mcu_task_avg=0.000007 mcu_task_stddev=0.000013 bytes_write=1076 bytes_read=5300 bytes_retransmit=0 bytes_invalid=0 send_seq=146 receive_seq=146 retransmit_seq=0 srtt=0.000 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=50000590 adj=49999577 heater_bed: target=0 temp=21.6 pwm=0.000 print_time=44.118 buffer_time=0.000 print_stall=0 extruder: target=0 temp=21.9 pwm=0.000 sysload=2.48 cputime=5.074 memavail=660896
+Stats 53.6: gcodein=0 mcu: mcu_awake=0.001 mcu_task_avg=0.000009 mcu_task_stddev=0.000007 bytes_write=2781 bytes_read=8914 bytes_retransmit=0 bytes_invalid=0 send_seq=243 receive_seq=243 retransmit_seq=0 srtt=0.001 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=84001615 rpi: mcu_awake=0.000 mcu_task_avg=0.000007 mcu_task_stddev=0.000013 bytes_write=1082 bytes_read=5316 bytes_retransmit=0 bytes_invalid=0 send_seq=147 receive_seq=147 retransmit_seq=0 srtt=0.000 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=50000612 adj=49999720 heater_bed: target=0 temp=21.7 pwm=0.000 print_time=44.118 buffer_time=0.000 print_stall=0 extruder: target=0 temp=21.9 pwm=0.000 sysload=2.48 cputime=5.099 memavail=660896
+Stats 54.6: gcodein=0 mcu: mcu_awake=0.001 mcu_task_avg=0.000009 mcu_task_stddev=0.000007 bytes_write=2787 bytes_read=9020 bytes_retransmit=0 bytes_invalid=0 send_seq=244 receive_seq=244 retransmit_seq=0 srtt=0.001 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=84001624 rpi: mcu_awake=0.000 mcu_task_avg=0.000007 mcu_task_stddev=0.000013 bytes_write=1088 bytes_read=5332 bytes_retransmit=0 bytes_invalid=0 send_seq=148 receive_seq=148 retransmit_seq=0 srtt=0.000 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=50000649 adj=49999813 heater_bed: target=0 temp=21.7 pwm=0.000 print_time=44.118 buffer_time=0.000 print_stall=0 extruder: target=0 temp=21.9 pwm=0.000 sysload=2.48 cputime=5.125 memavail=660900
+Stats 55.6: gcodein=0 mcu: mcu_awake=0.001 mcu_task_avg=0.000009 mcu_task_stddev=0.000007 bytes_write=2793 bytes_read=9141 bytes_retransmit=0 bytes_invalid=0 send_seq=245 receive_seq=245 retransmit_seq=0 srtt=0.001 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=84001644 rpi: mcu_awake=0.000 mcu_task_avg=0.000007 mcu_task_stddev=0.000013 bytes_write=1094 bytes_read=5348 bytes_retransmit=0 bytes_invalid=0 send_seq=149 receive_seq=149 retransmit_seq=0 srtt=0.000 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=50000651 adj=49999960 heater_bed: target=0 temp=21.7 pwm=0.000 print_time=44.118 buffer_time=0.000 print_stall=0 extruder: target=0 temp=21.9 pwm=0.000 sysload=2.36 cputime=5.152 memavail=661100
+Stats 56.6: gcodein=0 mcu: mcu_awake=0.001 mcu_task_avg=0.000009 mcu_task_stddev=0.000007 bytes_write=2799 bytes_read=9275 bytes_retransmit=0 bytes_invalid=0 send_seq=246 receive_seq=246 retransmit_seq=0 srtt=0.001 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=84001631 rpi: mcu_awake=0.000 mcu_task_avg=0.000007 mcu_task_stddev=0.000013 bytes_write=1100 bytes_read=5364 bytes_retransmit=0 bytes_invalid=0 send_seq=150 receive_seq=150 retransmit_seq=0 srtt=0.000 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=50000648 adj=49999832 heater_bed: target=0 temp=21.7 pwm=0.000 print_time=44.118 buffer_time=0.000 print_stall=0 extruder: target=0 temp=21.9 pwm=0.000 sysload=2.36 cputime=5.167 memavail=661164
+Stats 57.6: gcodein=0 mcu: mcu_awake=0.001 mcu_task_avg=0.000009 mcu_task_stddev=0.000007 bytes_write=2805 bytes_read=9381 bytes_retransmit=0 bytes_invalid=0 send_seq=247 receive_seq=247 retransmit_seq=0 srtt=0.001 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=84001625 rpi: mcu_awake=0.001 mcu_task_avg=0.000010 mcu_task_stddev=0.000018 bytes_write=1106 bytes_read=5393 bytes_retransmit=0 bytes_invalid=0 send_seq=151 receive_seq=151 retransmit_seq=0 srtt=0.000 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=50000630 adj=49999690 heater_bed: target=0 temp=21.7 pwm=0.000 print_time=44.118 buffer_time=0.000 print_stall=0 extruder: target=0 temp=21.9 pwm=0.000 sysload=2.36 cputime=5.182 memavail=661164
+Stats 58.6: gcodein=0 mcu: mcu_awake=0.001 mcu_task_avg=0.000009 mcu_task_stddev=0.000007 bytes_write=2811 bytes_read=9502 bytes_retransmit=0 bytes_invalid=0 send_seq=248 receive_seq=248 retransmit_seq=0 srtt=0.001 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=84001621 rpi: mcu_awake=0.001 mcu_task_avg=0.000010 mcu_task_stddev=0.000018 bytes_write=1112 bytes_read=5409 bytes_retransmit=0 bytes_invalid=0 send_seq=152 receive_seq=152 retransmit_seq=0 srtt=0.000 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=50000601 adj=49999597 heater_bed: target=0 temp=21.6 pwm=0.000 print_time=44.118 buffer_time=0.000 print_stall=0 extruder: target=0 temp=21.9 pwm=0.000 sysload=2.36 cputime=5.196 memavail=661424
+Stats 59.6: gcodein=0 mcu: mcu_awake=0.001 mcu_task_avg=0.000009 mcu_task_stddev=0.000007 bytes_write=2817 bytes_read=9623 bytes_retransmit=0 bytes_invalid=0 send_seq=249 receive_seq=249 retransmit_seq=0 srtt=0.001 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=84001615 rpi: mcu_awake=0.001 mcu_task_avg=0.000010 mcu_task_stddev=0.000018 bytes_write=1118 bytes_read=5425 bytes_retransmit=0 bytes_invalid=0 send_seq=153 receive_seq=153 retransmit_seq=0 srtt=0.000 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=50000590 adj=49999455 heater_bed: target=0 temp=21.6 pwm=0.000 print_time=44.118 buffer_time=0.000 print_stall=0 extruder: target=0 temp=21.9 pwm=0.000 sysload=2.36 cputime=5.209 memavail=661420
+Stats 60.6: gcodein=0 mcu: mcu_awake=0.001 mcu_task_avg=0.000009 mcu_task_stddev=0.000007 bytes_write=2823 bytes_read=9729 bytes_retransmit=0 bytes_invalid=0 send_seq=250 receive_seq=250 retransmit_seq=0 srtt=0.001 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=84001630 rpi: mcu_awake=0.001 mcu_task_avg=0.000010 mcu_task_stddev=0.000018 bytes_write=1124 bytes_read=5441 bytes_retransmit=0 bytes_invalid=0 send_seq=154 receive_seq=154 retransmit_seq=0 srtt=0.000 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=50000610 adj=49999450 heater_bed: target=0 temp=21.7 pwm=0.000 print_time=44.118 buffer_time=0.000 print_stall=0 extruder: target=0 temp=21.9 pwm=0.000 sysload=2.25 cputime=5.236 memavail=661428
+Stats 61.6: gcodein=0 mcu: mcu_awake=0.001 mcu_task_avg=0.000009 mcu_task_stddev=0.000007 bytes_write=2829 bytes_read=9863 bytes_retransmit=0 bytes_invalid=0 send_seq=251 receive_seq=251 retransmit_seq=0 srtt=0.001 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=84001623 rpi: mcu_awake=0.001 mcu_task_avg=0.000010 mcu_task_stddev=0.000018 bytes_write=1130 bytes_read=5457 bytes_retransmit=0 bytes_invalid=0 send_seq=155 receive_seq=155 retransmit_seq=0 srtt=0.000 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=50000603 adj=49999571 heater_bed: target=0 temp=21.6 pwm=0.000 print_time=44.118 buffer_time=0.000 print_stall=0 extruder: target=0 temp=21.9 pwm=0.000 sysload=2.25 cputime=5.254 memavail=676404
+Stats 62.6: gcodein=0 mcu: mcu_awake=0.001 mcu_task_avg=0.000009 mcu_task_stddev=0.000007 bytes_write=2835 bytes_read=9984 bytes_retransmit=0 bytes_invalid=0 send_seq=252 receive_seq=252 retransmit_seq=0 srtt=0.001 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=84001619 rpi: mcu_awake=0.000 mcu_task_avg=0.000007 mcu_task_stddev=0.000012 bytes_write=1136 bytes_read=5486 bytes_retransmit=0 bytes_invalid=0 send_seq=156 receive_seq=156 retransmit_seq=0 srtt=0.000 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=50000580 adj=49999567 heater_bed: target=0 temp=21.7 pwm=0.000 print_time=44.118 buffer_time=0.000 print_stall=0 extruder: target=0 temp=21.9 pwm=0.000 sysload=2.25 cputime=5.268 memavail=675928
+Stats 63.6: gcodein=0 mcu: mcu_awake=0.001 mcu_task_avg=0.000009 mcu_task_stddev=0.000007 bytes_write=2841 bytes_read=10090 bytes_retransmit=0 bytes_invalid=0 send_seq=253 receive_seq=253 retransmit_seq=0 srtt=0.001 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=84001612 rpi: mcu_awake=0.000 mcu_task_avg=0.000007 mcu_task_stddev=0.000012 bytes_write=1142 bytes_read=5502 bytes_retransmit=0 bytes_invalid=0 send_seq=157 receive_seq=157 retransmit_seq=0 srtt=0.000 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=50000560 adj=49999434 heater_bed: target=0 temp=21.6 pwm=0.000 print_time=44.118 buffer_time=0.000 print_stall=0 extruder: target=0 temp=21.9 pwm=0.000 sysload=2.25 cputime=5.285 memavail=673420
+Stats 64.6: gcodein=0 mcu: mcu_awake=0.001 mcu_task_avg=0.000009 mcu_task_stddev=0.000007 bytes_write=2847 bytes_read=10211 bytes_retransmit=0 bytes_invalid=0 send_seq=254 receive_seq=254 retransmit_seq=0 srtt=0.001 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=84001615 rpi: mcu_awake=0.000 mcu_task_avg=0.000007 mcu_task_stddev=0.000012 bytes_write=1148 bytes_read=5518 bytes_retransmit=0 bytes_invalid=0 send_seq=158 receive_seq=158 retransmit_seq=0 srtt=0.000 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=50000570 adj=49999360 heater_bed: target=0 temp=21.6 pwm=0.000 print_time=44.118 buffer_time=0.000 print_stall=0 extruder: target=0 temp=21.9 pwm=0.000 sysload=2.25 cputime=5.300 memavail=670152
+Stats 65.6: gcodein=0 mcu: mcu_awake=0.001 mcu_task_avg=0.000009 mcu_task_stddev=0.000007 bytes_write=2853 bytes_read=10332 bytes_retransmit=0 bytes_invalid=0 send_seq=255 receive_seq=255 retransmit_seq=0 srtt=0.001 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=84001609 rpi: mcu_awake=0.000 mcu_task_avg=0.000007 mcu_task_stddev=0.000012 bytes_write=1154 bytes_read=5534 bytes_retransmit=0 bytes_invalid=0 send_seq=159 receive_seq=159 retransmit_seq=0 srtt=0.000 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=50000566 adj=49999489 heater_bed: target=0 temp=21.7 pwm=0.000 print_time=44.118 buffer_time=0.000 print_stall=0 extruder: target=0 temp=21.9 pwm=0.000 sysload=2.15 cputime=5.314 memavail=670152
+Stats 66.6: gcodein=0 mcu: mcu_awake=0.001 mcu_task_avg=0.000009 mcu_task_stddev=0.000007 bytes_write=2859 bytes_read=10451 bytes_retransmit=0 bytes_invalid=0 send_seq=256 receive_seq=256 retransmit_seq=0 srtt=0.001 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=84001619 rpi: mcu_awake=0.000 mcu_task_avg=0.000007 mcu_task_stddev=0.000012 bytes_write=1160 bytes_read=5550 bytes_retransmit=0 bytes_invalid=0 send_seq=160 receive_seq=160 retransmit_seq=0 srtt=0.000 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=50000554 adj=49999512 heater_bed: target=0 temp=21.8 pwm=0.000 print_time=44.118 buffer_time=0.000 print_stall=0 extruder: target=0 temp=21.9 pwm=0.000 sysload=2.15 cputime=5.327 memavail=670156
+Stats 67.6: gcodein=0 mcu: mcu_awake=0.001 mcu_task_avg=0.000009 mcu_task_stddev=0.000007 bytes_write=2865 bytes_read=10572 bytes_retransmit=0 bytes_invalid=0 send_seq=257 receive_seq=257 retransmit_seq=0 srtt=0.001 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=84001613 rpi: mcu_awake=0.000 mcu_task_avg=0.000009 mcu_task_stddev=0.000018 bytes_write=1166 bytes_read=5579 bytes_retransmit=0 bytes_invalid=0 send_seq=161 receive_seq=161 retransmit_seq=0 srtt=0.000 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=50000581 adj=49999386 heater_bed: target=0 temp=21.6 pwm=0.000 print_time=44.118 buffer_time=0.000 print_stall=0 extruder: target=0 temp=21.9 pwm=0.000 sysload=2.15 cputime=5.350 memavail=670156
+Stats 68.6: gcodein=0 mcu: mcu_awake=0.001 mcu_task_avg=0.000009 mcu_task_stddev=0.000007 bytes_write=2871 bytes_read=10693 bytes_retransmit=0 bytes_invalid=0 send_seq=258 receive_seq=258 retransmit_seq=0 srtt=0.001 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=84001617 rpi: mcu_awake=0.000 mcu_task_avg=0.000009 mcu_task_stddev=0.000018 bytes_write=1172 bytes_read=5595 bytes_retransmit=0 bytes_invalid=0 send_seq=162 receive_seq=162 retransmit_seq=0 srtt=0.000 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=50000619 adj=49999693 heater_bed: target=0 temp=21.7 pwm=0.000 print_time=44.118 buffer_time=0.000 print_stall=0 extruder: target=0 temp=21.9 pwm=0.000 sysload=2.15 cputime=5.377 memavail=669684
+Stats 69.6: gcodein=0 mcu: mcu_awake=0.001 mcu_task_avg=0.000009 mcu_task_stddev=0.000007 bytes_write=2877 bytes_read=10799 bytes_retransmit=0 bytes_invalid=0 send_seq=259 receive_seq=259 retransmit_seq=0 srtt=0.001 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=84001627 rpi: mcu_awake=0.000 mcu_task_avg=0.000009 mcu_task_stddev=0.000018 bytes_write=1178 bytes_read=5611 bytes_retransmit=0 bytes_invalid=0 send_seq=163 receive_seq=163 retransmit_seq=0 srtt=0.000 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=50000642 adj=49999974 heater_bed: target=0 temp=21.6 pwm=0.000 print_time=44.118 buffer_time=0.000 print_stall=0 extruder: target=0 temp=21.9 pwm=0.000 sysload=2.15 cputime=5.406 memavail=669684
+Stats 70.6: gcodein=0 mcu: mcu_awake=0.001 mcu_task_avg=0.000009 mcu_task_stddev=0.000007 bytes_write=2883 bytes_read=10920 bytes_retransmit=0 bytes_invalid=0 send_seq=260 receive_seq=260 retransmit_seq=0 srtt=0.001 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=84001634 rpi: mcu_awake=0.000 mcu_task_avg=0.000009 mcu_task_stddev=0.000018 bytes_write=1184 bytes_read=5627 bytes_retransmit=0 bytes_invalid=0 send_seq=164 receive_seq=164 retransmit_seq=0 srtt=0.000 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=50000684 adj=50000038 heater_bed: target=0 temp=21.7 pwm=0.000 print_time=44.118 buffer_time=0.000 print_stall=0 extruder: target=0 temp=21.9 pwm=0.000 sysload=2.06 cputime=5.434 memavail=669680
+Stats 71.6: gcodein=0 mcu: mcu_awake=0.001 mcu_task_avg=0.000009 mcu_task_stddev=0.000007 bytes_write=2889 bytes_read=11054 bytes_retransmit=0 bytes_invalid=0 send_seq=261 receive_seq=261 retransmit_seq=0 srtt=0.001 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=84001629 rpi: mcu_awake=0.000 mcu_task_avg=0.000009 mcu_task_stddev=0.000018 bytes_write=1190 bytes_read=5643 bytes_retransmit=0 bytes_invalid=0 send_seq=165 receive_seq=165 retransmit_seq=0 srtt=0.000 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=50000670 adj=50000279 heater_bed: target=0 temp=21.7 pwm=0.000 print_time=44.118 buffer_time=0.000 print_stall=0 extruder: target=0 temp=21.9 pwm=0.000 sysload=2.06 cputime=5.449 memavail=669460
+Stats 72.6: gcodein=0 mcu: mcu_awake=0.001 mcu_task_avg=0.000009 mcu_task_stddev=0.000007 bytes_write=2895 bytes_read=11160 bytes_retransmit=0 bytes_invalid=0 send_seq=262 receive_seq=262 retransmit_seq=0 srtt=0.001 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=84001624 rpi: mcu_awake=0.001 mcu_task_avg=0.000011 mcu_task_stddev=0.000021 bytes_write=1196 bytes_read=5672 bytes_retransmit=0 bytes_invalid=0 send_seq=166 receive_seq=166 retransmit_seq=0 srtt=0.000 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=50000662 adj=50000035 heater_bed: target=0 temp=21.6 pwm=0.000 print_time=44.118 buffer_time=0.000 print_stall=0 extruder: target=0 temp=21.9 pwm=0.000 sysload=2.06 cputime=5.463 memavail=669208
+Stats 73.6: gcodein=0 mcu: mcu_awake=0.001 mcu_task_avg=0.000009 mcu_task_stddev=0.000007 bytes_write=2901 bytes_read=11281 bytes_retransmit=0 bytes_invalid=0 send_seq=263 receive_seq=263 retransmit_seq=0 srtt=0.001 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=84001619 rpi: mcu_awake=0.001 mcu_task_avg=0.000011 mcu_task_stddev=0.000021 bytes_write=1202 bytes_read=5688 bytes_retransmit=0 bytes_invalid=0 send_seq=167 receive_seq=167 retransmit_seq=0 srtt=0.000 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=50000648 adj=49999902 heater_bed: target=0 temp=21.6 pwm=0.000 print_time=44.118 buffer_time=0.000 print_stall=0 extruder: target=0 temp=21.9 pwm=0.000 sysload=2.06 cputime=5.476 memavail=669208
+Stats 74.6: gcodein=0 mcu: mcu_awake=0.001 mcu_task_avg=0.000009 mcu_task_stddev=0.000007 bytes_write=2907 bytes_read=11402 bytes_retransmit=0 bytes_invalid=0 send_seq=264 receive_seq=264 retransmit_seq=0 srtt=0.001 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=84001616 rpi: mcu_awake=0.001 mcu_task_avg=0.000011 mcu_task_stddev=0.000021 bytes_write=1208 bytes_read=5704 bytes_retransmit=0 bytes_invalid=0 send_seq=168 receive_seq=168 retransmit_seq=0 srtt=0.000 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=50000640 adj=49999756 heater_bed: target=0 temp=21.6 pwm=0.000 print_time=44.118 buffer_time=0.000 print_stall=0 extruder: target=0 temp=21.9 pwm=0.000 sysload=2.06 cputime=5.492 memavail=669208
+Stats 75.6: gcodein=0 mcu: mcu_awake=0.001 mcu_task_avg=0.000009 mcu_task_stddev=0.000007 bytes_write=2913 bytes_read=11508 bytes_retransmit=0 bytes_invalid=0 send_seq=265 receive_seq=265 retransmit_seq=0 srtt=0.001 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=84001623 rpi: mcu_awake=0.001 mcu_task_avg=0.000011 mcu_task_stddev=0.000021 bytes_write=1214 bytes_read=5720 bytes_retransmit=0 bytes_invalid=0 send_seq=169 receive_seq=169 retransmit_seq=0 srtt=0.000 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=50000672 adj=49999684 heater_bed: target=0 temp=21.6 pwm=0.000 print_time=44.118 buffer_time=0.000 print_stall=0 extruder: target=0 temp=21.9 pwm=0.000 sysload=1.98 cputime=5.520 memavail=669208
+Stats 76.6: gcodein=0 mcu: mcu_awake=0.001 mcu_task_avg=0.000009 mcu_task_stddev=0.000007 bytes_write=2919 bytes_read=11642 bytes_retransmit=0 bytes_invalid=0 send_seq=266 receive_seq=266 retransmit_seq=0 srtt=0.001 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=84001621 rpi: mcu_awake=0.001 mcu_task_avg=0.000011 mcu_task_stddev=0.000021 bytes_write=1220 bytes_read=5736 bytes_retransmit=0 bytes_invalid=0 send_seq=170 receive_seq=170 retransmit_seq=0 srtt=0.000 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=50000667 adj=49999939 heater_bed: target=0 temp=21.6 pwm=0.000 print_time=44.118 buffer_time=0.000 print_stall=0 extruder: target=0 temp=21.9 pwm=0.000 sysload=1.98 cputime=5.537 memavail=668452
+Stats 77.6: gcodein=0 mcu: mcu_awake=0.001 mcu_task_avg=0.000009 mcu_task_stddev=0.000007 bytes_write=2931 bytes_read=11779 bytes_retransmit=0 bytes_invalid=0 send_seq=268 receive_seq=268 retransmit_seq=0 srtt=0.001 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=84001610 rpi: mcu_awake=0.001 mcu_task_avg=0.000009 mcu_task_stddev=0.000018 bytes_write=1226 bytes_read=5765 bytes_retransmit=0 bytes_invalid=0 send_seq=171 receive_seq=171 retransmit_seq=0 srtt=0.000 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=50000653 adj=49999846 heater_bed: target=0 temp=21.6 pwm=0.000 print_time=44.118 buffer_time=0.000 print_stall=0 extruder: target=0 temp=21.9 pwm=0.000 sysload=1.98 cputime=5.551 memavail=668464
+Stats 78.6: gcodein=0 mcu: mcu_awake=0.001 mcu_task_avg=0.000009 mcu_task_stddev=0.000007 bytes_write=2937 bytes_read=11885 bytes_retransmit=0 bytes_invalid=0 send_seq=269 receive_seq=269 retransmit_seq=0 srtt=0.001 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=84001605 rpi: mcu_awake=0.001 mcu_task_avg=0.000009 mcu_task_stddev=0.000018 bytes_write=1232 bytes_read=5781 bytes_retransmit=0 bytes_invalid=0 send_seq=172 receive_seq=172 retransmit_seq=0 srtt=0.000 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=50000635 adj=49999741 heater_bed: target=0 temp=21.6 pwm=0.000 print_time=44.118 buffer_time=0.000 print_stall=0 extruder: target=0 temp=21.9 pwm=0.000 sysload=1.98 cputime=5.569 memavail=671024
+Stats 79.6: gcodein=0 mcu: mcu_awake=0.001 mcu_task_avg=0.000009 mcu_task_stddev=0.000007 bytes_write=2943 bytes_read=12006 bytes_retransmit=0 bytes_invalid=0 send_seq=270 receive_seq=270 retransmit_seq=0 srtt=0.001 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=84001601 rpi: mcu_awake=0.001 mcu_task_avg=0.000009 mcu_task_stddev=0.000018 bytes_write=1238 bytes_read=5797 bytes_retransmit=0 bytes_invalid=0 send_seq=173 receive_seq=173 retransmit_seq=0 srtt=0.000 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=50000619 adj=49999614 heater_bed: target=0 temp=21.6 pwm=0.000 print_time=44.118 buffer_time=0.000 print_stall=0 extruder: target=0 temp=21.9 pwm=0.000 sysload=1.98 cputime=5.584 memavail=670776
+Stats 80.6: gcodein=0 mcu: mcu_awake=0.001 mcu_task_avg=0.000009 mcu_task_stddev=0.000007 bytes_write=2949 bytes_read=12127 bytes_retransmit=0 bytes_invalid=0 send_seq=271 receive_seq=271 retransmit_seq=0 srtt=0.001 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=84001598 rpi: mcu_awake=0.001 mcu_task_avg=0.000009 mcu_task_stddev=0.000018 bytes_write=1244 bytes_read=5813 bytes_retransmit=0 bytes_invalid=0 send_seq=174 receive_seq=174 retransmit_seq=0 srtt=0.000 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=50000603 adj=49999474 heater_bed: target=0 temp=21.6 pwm=0.000 print_time=44.118 buffer_time=0.000 print_stall=0 extruder: target=0 temp=21.9 pwm=0.000 sysload=1.90 cputime=5.600 memavail=670300
+Stats 81.6: gcodein=0 mcu: mcu_awake=0.001 mcu_task_avg=0.000009 mcu_task_stddev=0.000007 bytes_write=2955 bytes_read=12246 bytes_retransmit=0 bytes_invalid=0 send_seq=272 receive_seq=272 retransmit_seq=0 srtt=0.001 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=84001594 rpi: mcu_awake=0.001 mcu_task_avg=0.000009 mcu_task_stddev=0.000018 bytes_write=1250 bytes_read=5829 bytes_retransmit=0 bytes_invalid=0 send_seq=175 receive_seq=175 retransmit_seq=0 srtt=0.000 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=50000595 adj=49999382 heater_bed: target=0 temp=21.6 pwm=0.000 print_time=44.118 buffer_time=0.000 print_stall=0 extruder: target=0 temp=21.9 pwm=0.000 sysload=1.90 cputime=5.614 memavail=670076
+Stats 82.6: gcodein=0 mcu: mcu_awake=0.001 mcu_task_avg=0.000009 mcu_task_stddev=0.000007 bytes_write=2961 bytes_read=12367 bytes_retransmit=0 bytes_invalid=0 send_seq=273 receive_seq=273 retransmit_seq=0 srtt=0.001 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=84001591 rpi: mcu_awake=0.000 mcu_task_avg=0.000008 mcu_task_stddev=0.000013 bytes_write=1256 bytes_read=5858 bytes_retransmit=0 bytes_invalid=0 send_seq=176 receive_seq=176 retransmit_seq=0 srtt=0.000 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=50000614 adj=49999387 heater_bed: target=0 temp=21.6 pwm=0.000 print_time=44.118 buffer_time=0.000 print_stall=0 extruder: target=0 temp=21.9 pwm=0.000 sysload=1.90 cputime=5.631 memavail=668708
+Stats 83.6: gcodein=0 mcu: mcu_awake=0.001 mcu_task_avg=0.000009 mcu_task_stddev=0.000007 bytes_write=2967 bytes_read=12488 bytes_retransmit=0 bytes_invalid=0 send_seq=274 receive_seq=274 retransmit_seq=0 srtt=0.001 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=84001589 rpi: mcu_awake=0.000 mcu_task_avg=0.000008 mcu_task_stddev=0.000013 bytes_write=1262 bytes_read=5874 bytes_retransmit=0 bytes_invalid=0 send_seq=177 receive_seq=177 retransmit_seq=0 srtt=0.000 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=50000596 adj=49999662 heater_bed: target=0 temp=21.6 pwm=0.000 print_time=44.118 buffer_time=0.000 print_stall=0 extruder: target=0 temp=21.9 pwm=0.000 sysload=1.90 cputime=5.646 memavail=667368
+Stats 84.6: gcodein=0 mcu: mcu_awake=0.001 mcu_task_avg=0.000009 mcu_task_stddev=0.000007 bytes_write=2973 bytes_read=12594 bytes_retransmit=0 bytes_invalid=0 send_seq=275 receive_seq=275 retransmit_seq=0 srtt=0.001 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=84001595 rpi: mcu_awake=0.000 mcu_task_avg=0.000008 mcu_task_stddev=0.000013 bytes_write=1268 bytes_read=5890 bytes_retransmit=0 bytes_invalid=0 send_seq=178 receive_seq=178 retransmit_seq=0 srtt=0.000 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=50000591 adj=49999501 heater_bed: target=0 temp=21.6 pwm=0.000 print_time=44.118 buffer_time=0.000 print_stall=0 extruder: target=0 temp=21.9 pwm=0.000 sysload=1.90 cputime=5.663 memavail=666228
+Stats 85.6: gcodein=0 mcu: mcu_awake=0.001 mcu_task_avg=0.000009 mcu_task_stddev=0.000007 bytes_write=2979 bytes_read=12715 bytes_retransmit=0 bytes_invalid=0 send_seq=276 receive_seq=276 retransmit_seq=0 srtt=0.001 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=84001593 rpi: mcu_awake=0.000 mcu_task_avg=0.000008 mcu_task_stddev=0.000013 bytes_write=1274 bytes_read=5906 bytes_retransmit=0 bytes_invalid=0 send_seq=179 receive_seq=179 retransmit_seq=0 srtt=0.000 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=50000585 adj=49999440 heater_bed: target=0 temp=21.7 pwm=0.000 print_time=44.118 buffer_time=0.000 print_stall=0 extruder: target=0 temp=21.9 pwm=0.000 sysload=1.91 cputime=5.678 memavail=666228
+Running Command {update_git_script}...:
+[K[1;92m●[0m Checking for installed dependencies [1;92mDone![0m
+
+
+Stats 86.6: gcodein=0 mcu: mcu_awake=0.001 mcu_task_avg=0.000009 mcu_task_stddev=0.000007 bytes_write=2985 bytes_read=12849 bytes_retransmit=0 bytes_invalid=0 send_seq=277 receive_seq=277 retransmit_seq=0 srtt=0.001 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=84001592 rpi: mcu_awake=0.000 mcu_task_avg=0.000008 mcu_task_stddev=0.000013 bytes_write=1280 bytes_read=5922 bytes_retransmit=0 bytes_invalid=0 send_seq=180 receive_seq=180 retransmit_seq=0 srtt=0.000 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=50000576 adj=49999442 heater_bed: target=0 temp=21.6 pwm=0.000 print_time=44.118 buffer_time=0.000 print_stall=0 extruder: target=0 temp=21.9 pwm=0.000 sysload=1.91 cputime=5.699 memavail=663292
+Klipper-Backup is up to date
+
+
+Stats 87.7: gcodein=0 mcu: mcu_awake=0.001 mcu_task_avg=0.000009 mcu_task_stddev=0.000007 bytes_write=2985 bytes_read=12924 bytes_retransmit=0 bytes_invalid=0 send_seq=277 receive_seq=277 retransmit_seq=0 srtt=0.001 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=1 freq=84001592 rpi: mcu_awake=0.000 mcu_task_avg=0.000008 mcu_task_stddev=0.000013 bytes_write=1286 bytes_read=5938 bytes_retransmit=0 bytes_invalid=0 send_seq=181 receive_seq=181 retransmit_seq=0 srtt=0.000 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=50000565 adj=49999400 heater_bed: target=0 temp=21.7 pwm=0.000 print_time=44.118 buffer_time=0.000 print_stall=0 extruder: target=0 temp=21.9 pwm=0.000 sysload=1.91 cputime=5.711 memavail=657024
+Skipping symbolic link: printer_data/config/fluidd.cfg
+Skipping symbolic link: printer_data/config/KAMP
+
+Skipping symbolic link: printer_data/config/mainsail.cfg
+
+Skipping symbolic link: printer_data/config/timelapse.cfg
+
+Stats 88.7: gcodein=0 mcu: mcu_awake=0.001 mcu_task_avg=0.000009 mcu_task_stddev=0.000007 bytes_write=2997 bytes_read=13075 bytes_retransmit=0 bytes_invalid=0 send_seq=279 receive_seq=278 retransmit_seq=0 srtt=0.001 rttvar=0.000 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=84001597 rpi: mcu_awake=0.000 mcu_task_avg=0.000007 mcu_task_stddev=0.000011 bytes_write=1292 bytes_read=5967 bytes_retransmit=0 bytes_invalid=0 send_seq=182 receive_seq=182 retransmit_seq=0 srtt=0.001 rttvar=0.002 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=50000563 adj=49999342 heater_bed: target=0 temp=21.6 pwm=0.000 print_time=44.118 buffer_time=0.000 print_stall=0 extruder: target=0 temp=21.9 pwm=0.000 sysload=1.91 cputime=5.733 memavail=664460
+error: object file .git/objects/52/050bab183d3435c214d04b3b3dc1aaccaac1d2 is empty
+error: object file .git/objects/52/050bab183d3435c214d04b3b3dc1aaccaac1d2 is empty
+fatal: loose object 52050bab183d3435c214d04b3b3dc1aaccaac1d2 (stored in .git/objects/52/050bab183d3435c214d04b3b3dc1aaccaac1d2) is corrupt
+
+fatal: could not read Password for 'https://ghp_xxxxxxxxxxxxxxxx@github.com': No such device or address
+
+Stats 90.0: gcodein=0 mcu: mcu_awake=0.001 mcu_task_avg=0.000009 mcu_task_stddev=0.000007 bytes_write=2997 bytes_read=13181 bytes_retransmit=0 bytes_invalid=0 send_seq=279 receive_seq=279 retransmit_seq=0 srtt=0.002 rttvar=0.002 rto=0.025 ready_bytes=0 upcoming_bytes=1 freq=84001598 rpi: mcu_awake=0.000 mcu_task_avg=0.000007 mcu_task_stddev=0.000011 bytes_write=1298 bytes_read=5983 bytes_retransmit=0 bytes_invalid=0 send_seq=183 receive_seq=183 retransmit_seq=0 srtt=0.001 rttvar=0.002 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=50000556 adj=49999355 heater_bed: target=0 temp=21.6 pwm=0.000 print_time=44.118 buffer_time=0.000 print_stall=0 extruder: target=0 temp=21.9 pwm=0.000 sysload=1.91 cputime=5.751 memavail=656924
+fatal: could not read Password for 'https://ghp_xxxxxxxxxxxxxxxx@github.com': No such device or address
+
+Stats 91.0: gcodein=0 mcu: mcu_awake=0.001 mcu_task_avg=0.000009 mcu_task_stddev=0.000007 bytes_write=3003 bytes_read=13257 bytes_retransmit=0 bytes_invalid=0 send_seq=280 receive_seq=280 retransmit_seq=0 srtt=0.002 rttvar=0.002 rto=0.025 ready_bytes=0 upcoming_bytes=1 freq=84001605 rpi: mcu_awake=0.000 mcu_task_avg=0.000007 mcu_task_stddev=0.000011 bytes_write=1304 bytes_read=5999 bytes_retransmit=0 bytes_invalid=0 send_seq=184 receive_seq=184 retransmit_seq=0 srtt=0.001 rttvar=0.002 rto=0.025 ready_bytes=0 upcoming_bytes=0 freq=50000555 adj=49999351 heater_bed: target=0 temp=21.6 pwm=0.000 print_time=44.118 buffer_time=0.000 print_stall=0 extruder: target=0 temp=21.9 pwm=0.000 sysload=1.83 cputime=6.440 memavail=665704
+Stats 92.0: gcodein=0 mcu: mcu_awake=0.001 mcu_task_avg=0.000009 mcu_task_stddev=0.000007 bytes_write=3003 bytes_read=13257 bytes_retransmit=0 bytes_invalid=0 send_seq=280 receive_seq=280 retransmit_seq=0 srtt=0.002 rttvar=0.002 rto=0.025 ready_bytes=0 upcoming_bytes=2 freq=84001605 rpi: mcu_awake=0.000 mcu_task_avg=0.000007 mcu_task_stddev=0.000011 bytes_write=1304 bytes_read=5999 bytes_retransmit=0 bytes_invalid=0 send_seq=184 receive_seq=184 retransmit_seq=0 srtt=0.001 rttvar=0.002 rto=0.025 ready_bytes=0 upcoming_bytes=1 freq=50000555 adj=49999362 heater_bed: target=0 temp=21.6 pwm=0.000 print_time=44.118 buffer_time=0.000 print_stall=0 extruder: target=0 temp=21.9 pwm=0.000 sysload=1.83 cputime=7.440 memavail=663888
+Stats 93.0: gcodein=0 mcu: mcu_awake=0.001 mcu_task_avg=0.000009 mcu_task_stddev=0.000007 bytes_write=3003 bytes_read=13257 bytes_retransmit=0 bytes_invalid=0 send_seq=280 receive_seq=280 retransmit_seq=0 srtt=0.002 rttvar=0.002 rto=0.025 ready_bytes=0 upcoming_bytes=3 freq=84001605 rpi: mcu_awake=0.000 mcu_task_avg=0.000007 mcu_task_stddev=0.000011 bytes_write=1304 bytes_read=5999 bytes_retransmit=0 bytes_invalid=0 send_seq=184 receive_seq=184 retransmit_seq=0 srtt=0.001 rttvar=0.002 rto=0.025 ready_bytes=0 upcoming_bytes=2 freq=50000555 adj=49999422 heater_bed: target=0 temp=21.6 pwm=0.000 print_time=44.118 buffer_time=0.000 print_stall=0 extruder: target=0 temp=21.9 pwm=0.000 sysload=1.83 cputime=8.440 memavail=663232
+Stats 94.0: gcodein=0 mcu: mcu_awake=0.001 mcu_task_avg=0.000009 mcu_task_stddev=0.000007 bytes_write=3003 bytes_read=13257 bytes_retransmit=0 bytes_invalid=0 send_seq=280 receive_seq=280 retransmit_seq=0 srtt=0.002 rttvar=0.002 rto=0.025 ready_bytes=0 upcoming_bytes=4 freq=84001605 rpi: mcu_awake=0.000 mcu_task_avg=0.000007 mcu_task_stddev=0.000011 bytes_write=1304 bytes_read=5999 bytes_retransmit=0 bytes_invalid=0 send_seq=184 receive_seq=184 retransmit_seq=0 srtt=0.001 rttvar=0.002 rto=0.025 ready_bytes=0 upcoming_bytes=3 freq=50000555 adj=49999466 heater_bed: target=0 temp=21.6 pwm=0.000 print_time=44.118 buffer_time=0.000 print_stall=0 extruder: target=0 temp=21.9 pwm=0.000 sysload=1.83 cputime=9.440 memavail=662152
+Timeout with MCU 'mcu' (eventtime=94.959387)
+Transition to shutdown state: Lost communication with MCU 'mcu'
+Dumping gcode input 0 blocks
+Dumping 20 requests for client 281473315401296
+Received 33.101334: b'{"id":281473086330512,"method":"register_remote_method","params":{"response_template":{"method":"start_job_queue"},"remote_method":"start_job_queue"}}'
+Received 33.103401: b'{"id":281473086330512,"method":"register_remote_method","params":{"response_template":{"method":"spoolman_set_active_spool"},"remote_method":"spoolman_set_active_spool"}}'
+Received 33.106952: b'{"id":281473086763216,"method":"objects/query","params":{"objects":{"heaters":null}}}'
+Received 33.107800: b'{"id":281473086763792,"method":"objects/query","params":{"objects":{"heaters":null}}}'
+Received 33.108706: b'{"id":281473086765648,"method":"objects/subscribe","params":{"objects":{"webhooks":null,"print_stats":null,"toolhead":["position","extruder"]},"response_template":{"method":"process_status_update"}}}'
+Received 33.340377: b'{"id":281473086765328,"method":"objects/subscribe","params":{"objects":{"webhooks":null,"print_stats":null,"toolhead":["position","extruder"],"heater_bed":null,"extruder":null},"response_template":{"method":"process_status_update"}}}'
+Received 33.590703: b'{"id":281473086759440,"method":"objects/subscribe","params":{"objects":{"webhooks":null,"print_stats":null,"toolhead":["position","extruder"],"heater_bed":null,"extruder":null},"response_template":{"method":"process_status_update"}}}'
+Received 39.690033: b'{"id":281473086752528,"method":"info","params":{}}'
+Received 39.724902: b'{"id":281473086765712,"method":"objects/subscribe","params":{"objects":{"gcode_move":["extrude_factor","speed_factor","homing_origin"],"motion_report":["live_position","live_velocity"],"fan":["speed"],"heater_bed":null,"extruder":null,"heater_generic heater_bed_outer":["temperature","target"],"display_status":["progress"],"print_stats":null,"output_pin Part_Light":["value"],"output_pin Frame_Light":["value"],"configfile":["config"],"filament_switch_sensor filament_sensor":["enabled"],"webhooks":null,"toolhead":["position","extruder"]},"response_template":{"method":"process_status_update"}}}'
+Received 41.948579: b'{"id":281473086413776,"method":"info","params":{}}'
+Received 41.951175: b'{"id":281473086759120,"method":"objects/list","params":{}}'
+Received 42.119382: b'{"id":281473086759248,"method":"objects/subscribe","params":{"objects":{"gcode":null,"webhooks":null,"configfile":null,"mcu":null,"mcu rpi":null,"gcode_move":null,"print_stats":null,"virtual_sdcard":null,"pause_resume":null,"display_status":null,"gcode_macro CANCEL_PRINT":null,"gcode_macro PAUSE":null,"gcode_macro RESUME":null,"gcode_macro SET_PAUSE_NEXT_LAYER":null,"gcode_macro SET_PAUSE_AT_LAYER":null,"gcode_macro SET_PRINT_STATS_INFO":null,"gcode_macro _TOOLHEAD_PARK_PAUSE_CANCEL":null,"gcode_macro _CLIENT_EXTRUDE":null,"gcode_macro _CLIENT_RETRACT":null,"gcode_macro _CLIENT_LINEAR_MOVE":null,"gcode_macro _KAMP_Settings":null,"gcode_macro SMART_PARK":null,"gcode_macro LINE_PURGE":null,"gcode_macro GET_TIMELAPSE_SETUP":null,"gcode_macro _SET_TIMELAPSE_SETUP":null,"gcode_macro TIMELAPSE_TAKE_FRAME":null,"gcode_macro _TIMELAPSE_NEW_FRAME":null,"gcode_macro HYPERLAPSE":null,"gcode_macro TIMELAPSE_RENDER":null,"gcode_macro TEST_STREAM_DELAY":null,"gcode_macro INPUT_SHAPER_Y":null,"gcode_macro INPUT_SHAPER_X":null,"gcode_macro SET_ACTIVE_SPOOL":null,"gcode_macro CLEAR_ACTIVE_SPOOL":null,"gcode_macro PRINT_LAYER":null,"gcode_macro update_git":null,"exclude_object":null,"firmware_retraction":null,"idle_timeout":null,"gcode_macro PRINT_START":null,"gcode_macro print_globals":null,"gcode_macro PRINT_END":null,"filament_switch_sensor filament_sensor":null,"gcode_macro M600":null,"gcode_macro LOAD_FILAMENT":null,"gcode_macro UNLOAD_FILAMENT":null,"stepper_enable":null,"tmc2209 stepper_x":null,"tmc2209 stepper_y":null,"tmc2209 stepper_z":null,"tmc2209 extruder":null,"heaters":null,"heater_bed":null,"gcode_macro SET_BED_TEMPERATURE":null,"gcode_macro BED_TEMPERATURE_WAIT":null,"probe":null,"bed_mesh":null,"output_pin Frame_Light":null,"output_pin Part_Light":null,"gcode_macro Frame_Light_ON":null,"gcode_macro Frame_Light_OFF":null,"gcode_macro Part_Light_ON":null,"gcode_macro Part_Light_OFF":null,"gcode_macro ZIGBEE_OFF":null,"gcode_macro ZIGBEE_ON":null,"pwm_cycle_time beeper":null,"gcode_macro M300":null,"gcode_macro PAUSE_TUNE":null,"gcode_macro END_TUNE":null,"controller_fan heatbreak+mainboard_fan":null,"fan":null,"gcode_macro CG28":null,"gcode_macro Axis_Twist_Comp_Tune":null,"screws_tilt_adjust":null,"gcode_macro Bed_Level_Screws_Tune":null,"gcode_macro Calibrate_Probe_Z_Offset":null,"gcode_macro Auto_Full_Bed_Level":null,"gcode_macro PID_Tune_EXTRUDER":null,"gcode_macro PID_Tune_BED":null,"query_endstops":null,"motion_report":null,"toolhead":null,"extruder":null,"system_stats":null,"manual_probe":null,"heater_generic heater_bed_outer":["temperature","target"]},"response_template":{"method":"process_status_update"}}}'
+Received 42.484016: b'{"id":281473076546576,"method":"gcode/help","params":{}}'
+Received 49.932394: b'{"id":281473086657808,"method":"objects/query","params":{"objects":{"print_stats":["state","message","filename","total_duration","print_duration","filament_used","info"],"idle_timeout":["state"],"display_status":["message","progress"],"virtual_sdcard":["progress"],"gcode_move":["speed","speed_factor"],"motion_report":["live_velocity"],"toolhead":["position"],"system_stats":["sysload","memavail"],"filament_switch_sensor filament_sensor":["filament_detected"],"output_pin Frame_Light":["value"],"output_pin Part_Light":["value"],"mcu":["last_stats"],"mcu rpi":["last_stats"],"heater_bed":["temperature","power","target"],"controller_fan heatbreak+mainboard_fan":["speed"],"extruder":["temperature","power","target"],"status":["update_available"],"fan":["speed"],"q":["u"]}}}'
+Received 50.141446: b'{"id":281473086570384,"method":"info","params":{}}'
+Received 50.147589: b'{"id":281473086666960,"method":"objects/query","params":{"objects":{"print_stats":["state","message","filename","total_duration","print_duration","filament_used","info"],"idle_timeout":["state"],"display_status":["message","progress"],"virtual_sdcard":["progress"],"gcode_move":["speed","speed_factor"],"motion_report":["live_velocity"],"toolhead":["position"],"system_stats":["sysload","memavail"],"filament_switch_sensor filament_sensor":["filament_detected"],"output_pin Frame_Light":["value"],"output_pin Part_Light":["value"],"mcu":["last_stats"],"mcu rpi":["last_stats"],"heater_bed":["temperature","power","target"],"controller_fan heatbreak+mainboard_fan":["speed"],"extruder":["temperature","power","target"],"status":["update_available"],"fan":["speed"],"q":["u"]}}}'
+Received 79.909958: b'{"id":281473076554704,"method":"objects/query","params":{"objects":{"print_stats":["state","message","filename","total_duration","print_duration","filament_used","info"],"idle_timeout":["state"],"display_status":["message","progress"],"virtual_sdcard":["progress"],"gcode_move":["speed","speed_factor"],"motion_report":["live_velocity"],"toolhead":["position"],"system_stats":["sysload","memavail"],"filament_switch_sensor filament_sensor":["filament_detected"],"output_pin Frame_Light":["value"],"output_pin Part_Light":["value"],"mcu":["last_stats"],"mcu rpi":["last_stats"],"heater_bed":["temperature","power","target"],"controller_fan heatbreak+mainboard_fan":["speed"],"extruder":["temperature","power","target"],"status":["update_available"],"fan":["speed"],"q":["u"]}}}'
+Received 79.971121: b'{"id":281473076579344,"method":"info","params":{}}'
+Received 79.977074: b'{"id":281473076549328,"method":"objects/query","params":{"objects":{"print_stats":["state","message","filename","total_duration","print_duration","filament_used","info"],"idle_timeout":["state"],"display_status":["message","progress"],"virtual_sdcard":["progress"],"gcode_move":["speed","speed_factor"],"motion_report":["live_velocity"],"toolhead":["position"],"system_stats":["sysload","memavail"],"filament_switch_sensor filament_sensor":["filament_detected"],"output_pin Frame_Light":["value"],"output_pin Part_Light":["value"],"mcu":["last_stats"],"mcu rpi":["last_stats"],"heater_bed":["temperature","power","target"],"controller_fan heatbreak+mainboard_fan":["speed"],"extruder":["temperature","power","target"],"status":["update_available"],"fan":["speed"],"q":["u"]}}}'
+Received 86.498637: b'{"id":281473095879248,"method":"gcode/script","params":{"script":"UPDATE_GIT"}}'
+MCU 'mcu' shutdown: 
+clocksync state: mcu_freq=84000000 last_clock=7924949504 clock_est=(64.706 5803328271 84001605.336) min_half_rtt=0.000254 min_rtt_time=79.561 time_avg=64.706(380.749) clock_avg=5803328271.061(31983492027.728) pred_variance=705960696.255
+Dumping serial stats: bytes_write=3003 bytes_read=13257 bytes_retransmit=0 bytes_invalid=0 send_seq=280 receive_seq=280 retransmit_seq=0 srtt=0.002 rttvar=0.002 rto=0.025 ready_bytes=0 upcoming_bytes=6
+Dumping send queue 100 messages
+Sent 0 32.235872 32.235112 19: seq: 14, tmcuart_send oid=2 write=b'\xea\x03h2\x80\x1e\xfa\xef?\xdf' read=0
+Sent 1 32.240231 32.239671 14: seq: 15, tmcuart_send oid=2 write=b'\xea\x03H \xe4' read=10
+Sent 2 32.247130 32.246370 19: seq: 16, tmcuart_send oid=2 write=b'\xea\x03\x882\x80\x00\x02\x08\xa0\xe6' read=0
+Sent 3 32.251653 32.251093 14: seq: 17, tmcuart_send oid=2 write=b'\xea\x03H \xe4' read=10
+Sent 4 32.258479 32.257719 19: seq: 18, tmcuart_send oid=2 write=b'\xea\x03H8\x80\x00\x02\x08 \xde' read=0
+Sent 5 32.262952 32.262392 14: seq: 19, tmcuart_send oid=2 write=b'\xea\x03H \xe4' read=10
+Sent 6 32.270621 32.269861 19: seq: 1a, tmcuart_send oid=2 write=b'\xea\x03\x08>\xe4\x1ar\x88\xa4\x85' read=0
+Sent 7 32.275137 32.274577 14: seq: 1b, tmcuart_send oid=2 write=b'\xea\x03H \xe4' read=10
+Sent 8 32.282155 32.281395 19: seq: 1c, tmcuart_send oid=2 write=b'\xea\x03(2\x80\x00\x02\x88"\xf3' read=0
+Sent 9 32.286676 32.286116 14: seq: 1d, tmcuart_send oid=2 write=b'\xea\x03H \xe4' read=10
+Sent 10 32.293602 32.292842 19: seq: 1e, tmcuart_send oid=2 write=b'\xea\x03\x088\x80\x00\x02\x08 \xba' read=0
+Sent 11 32.298112 32.297552 14: seq: 1f, tmcuart_send oid=2 write=b'\xea\x03H \xe4' read=10
+Sent 12 32.302797 32.302557 6: seq: 10, get_clock
+Sent 13 32.305990 32.305430 14: seq: 11, tmcuart_send oid=3 write=b'\xea\x03H \xe4' read=10
+Sent 14 32.312542 32.311782 19: seq: 12, tmcuart_send oid=3 write=b'\xea\x03\x080\x80\x00\n\x88\xb8\xf7' read=0
+Sent 15 32.317240 32.316680 14: seq: 13, tmcuart_send oid=3 write=b'\xea\x03H \xe4' read=10
+Sent 16 32.323973 32.323213 19: seq: 14, tmcuart_send oid=3 write=b'\xea\x03h0\x80\x00\x12\x08 \xda' read=0
+Sent 17 32.328627 32.328067 14: seq: 15, tmcuart_send oid=3 write=b'\xea\x03H \xe4' read=10
+Sent 18 32.335606 32.334846 19: seq: 16, tmcuart_send oid=3 write=b'\xea\x03\x88\xbd\x81\x06\x02h*\xf9' read=0
+Sent 19 32.340186 32.339626 14: seq: 17, tmcuart_send oid=3 write=b'\xea\x03H \xe4' read=10
+Sent 20 32.347272 32.346512 19: seq: 18, tmcuart_send oid=3 write=b'\xea\x03\x082\x80\x10\xca(\xa3\xc1' read=0
+Sent 21 32.351926 32.351366 14: seq: 19, tmcuart_send oid=3 write=b'\xea\x03H \xe4' read=10
+Sent 22 32.358857 32.358097 19: seq: 1a, tmcuart_send oid=3 write=b'\xea\x03h2\x80\x1e\xfa\xef?\xdf' read=0
+Sent 23 32.363288 32.362728 14: seq: 1b, tmcuart_send oid=3 write=b'\xea\x03H \xe4' read=10
+Sent 24 32.370160 32.369400 19: seq: 1c, tmcuart_send oid=3 write=b'\xea\x03\x882\x80\x00\x02\x08\xa0\xe6' read=0
+Sent 25 32.374595 32.374035 14: seq: 1d, tmcuart_send oid=3 write=b'\xea\x03H \xe4' read=10
+Sent 26 32.381574 32.380814 19: seq: 1e, tmcuart_send oid=3 write=b'\xea\x03H8\x80\x00\x02\x08 \xde' read=0
+Sent 27 32.386082 32.385522 14: seq: 1f, tmcuart_send oid=3 write=b'\xea\x03H \xe4' read=10
+Sent 28 32.392869 32.392109 19: seq: 10, tmcuart_send oid=3 write=b'\xea\x03\x08>\xe4\x1ar\x88\xa4\x85' read=0
+Sent 29 32.397651 32.397091 14: seq: 11, tmcuart_send oid=3 write=b'\xea\x03H \xe4' read=10
+Sent 30 32.404437 32.403677 19: seq: 12, tmcuart_send oid=3 write=b'\xea\x03(2\x80\x00\x02\x88"\xf3' read=0
+Sent 31 32.408962 32.408402 14: seq: 13, tmcuart_send oid=3 write=b'\xea\x03H \xe4' read=10
+Sent 32 32.415822 32.415062 19: seq: 14, tmcuart_send oid=3 write=b'\xea\x03\x088\x80\x00\x02\x08 \xba' read=0
+Sent 33 32.420307 32.419747 14: seq: 15, tmcuart_send oid=3 write=b'\xea\x03H \xe4' read=10
+Sent 34 32.447623 32.447343 7: seq: 16, stepper_get_position oid=8
+Sent 35 32.451226 32.450666 14: seq: 17, tmcuart_send oid=0 write=b'\xea\x03H-\xd5' read=10
+Sent 36 32.458105 32.457825 7: seq: 18, stepper_get_position oid=11
+Sent 37 32.460726 32.460166 14: seq: 19, tmcuart_send oid=1 write=b'\xea\x03H-\xd5' read=10
+Sent 38 32.467074 32.466794 7: seq: 1a, stepper_get_position oid=12
+Sent 39 32.469648 32.469088 14: seq: 1b, tmcuart_send oid=2 write=b'\xea\x03H-\xd5' read=10
+Sent 40 32.476004 32.475724 7: seq: 1c, stepper_get_position oid=13
+Sent 41 32.478563 32.478003 14: seq: 1d, tmcuart_send oid=3 write=b'\xea\x03H-\xd5' read=10
+Sent 42 33.288004 33.287764 6: seq: 1e, get_clock
+Sent 43 34.272329 34.272089 6: seq: 1f, get_clock
+Sent 44 35.256784 35.256544 6: seq: 10, get_clock
+Sent 45 36.240968 36.240728 6: seq: 11, get_clock
+Sent 46 37.225296 37.225056 6: seq: 12, get_clock
+Sent 47 38.210417 38.210177 6: seq: 13, get_clock
+Sent 48 39.195373 39.195133 6: seq: 14, get_clock
+Sent 49 40.179562 40.179322 6: seq: 15, get_clock
+Sent 50 41.163666 41.163426 6: seq: 16, get_clock
+Sent 51 42.148577 42.148337 6: seq: 17, get_clock
+Sent 52 43.133008 43.132768 6: seq: 18, get_clock
+Sent 53 44.119558 44.119318 6: seq: 19, get_clock
+Sent 54 45.102701 45.102461 6: seq: 1a, get_clock
+Sent 55 46.087888 46.087648 6: seq: 1b, get_clock
+Sent 56 47.071778 47.071538 6: seq: 1c, get_clock
+Sent 57 48.056293 48.056053 6: seq: 1d, get_clock
+Sent 58 49.041201 49.040961 6: seq: 1e, get_clock
+Sent 59 50.025468 50.025228 6: seq: 1f, get_clock
+Sent 60 51.009990 51.009750 6: seq: 10, get_clock
+Sent 61 51.994470 51.994230 6: seq: 11, get_clock
+Sent 62 52.979384 52.979144 6: seq: 12, get_clock
+Sent 63 53.963768 53.963528 6: seq: 13, get_clock
+Sent 64 54.948087 54.947847 6: seq: 14, get_clock
+Sent 65 55.932126 55.931886 6: seq: 15, get_clock
+Sent 66 56.916924 56.916684 6: seq: 16, get_clock
+Sent 67 57.902578 57.902338 6: seq: 17, get_clock
+Sent 68 58.886841 58.886601 6: seq: 18, get_clock
+Sent 69 59.871883 59.871643 6: seq: 19, get_clock
+Sent 70 60.855759 60.855519 6: seq: 1a, get_clock
+Sent 71 61.839894 61.839654 6: seq: 1b, get_clock
+Sent 72 62.824011 62.823771 6: seq: 1c, get_clock
+Sent 73 63.808614 63.808374 6: seq: 1d, get_clock
+Sent 74 64.792832 64.792592 6: seq: 1e, get_clock
+Sent 75 65.777024 65.776784 6: seq: 1f, get_clock
+Sent 76 66.761296 66.761056 6: seq: 10, get_clock
+Sent 77 67.746480 67.746240 6: seq: 11, get_clock
+Sent 78 68.731042 68.730802 6: seq: 12, get_clock
+Sent 79 69.716297 69.716057 6: seq: 13, get_clock
+Sent 80 70.700437 70.700197 6: seq: 14, get_clock
+Sent 81 71.685354 71.685114 6: seq: 15, get_clock
+Sent 82 72.669845 72.669605 6: seq: 16, get_clock
+Sent 83 73.654799 73.654559 6: seq: 17, get_clock
+Sent 84 74.639318 74.639078 6: seq: 18, get_clock
+Sent 85 75.623844 75.623604 6: seq: 19, get_clock
+Sent 86 76.608535 76.608295 6: seq: 1a, get_clock
+Sent 87 77.592966 77.592726 6: seq: 1b, get_clock
+Sent 88 78.577187 78.576947 6: seq: 1c, get_clock
+Sent 89 79.561346 79.561106 6: seq: 1d, get_clock
+Sent 90 80.545983 80.545743 6: seq: 1e, get_clock
+Sent 91 81.530952 81.530712 6: seq: 1f, get_clock
+Sent 92 82.514989 82.514749 6: seq: 10, get_clock
+Sent 93 83.499539 83.499299 6: seq: 11, get_clock
+Sent 94 84.484110 84.483870 6: seq: 12, get_clock
+Sent 95 85.468616 85.468376 6: seq: 13, get_clock
+Sent 96 86.452655 86.452415 6: seq: 14, get_clock
+Sent 97 87.707430 87.707190 6: seq: 15, get_clock
+Sent 98 88.697835 88.697595 6: seq: 16, get_clock
+Sent 99 89.962742 89.962502 6: seq: 17, get_clock
+Dumping receive queue 100 messages
+Receive: 0 77.546038 76.608535 15: seq: 1b, analog_in_state oid=22 next_clock=2611512704 value=31480
+Receive: 1 77.593518 77.592966 11: seq: 1c, clock clock=2590897042
+Receive: 2 77.775976 77.592966 15: seq: 1c, analog_in_state oid=15 next_clock=2630832704 value=31493
+Receive: 3 77.845936 77.592966 15: seq: 1c, analog_in_state oid=22 next_clock=2636712704 value=31480
+Receive: 4 78.076003 77.592966 15: seq: 1c, analog_in_state oid=15 next_clock=2656032704 value=31492
+Receive: 5 78.146049 77.592966 15: seq: 1c, analog_in_state oid=22 next_clock=2661912704 value=31478
+Receive: 6 78.376014 77.592966 15: seq: 1c, analog_in_state oid=15 next_clock=2681232704 value=31496
+Receive: 7 78.446003 77.592966 15: seq: 1c, analog_in_state oid=22 next_clock=2687112704 value=31478
+Receive: 8 78.577760 78.577187 11: seq: 1d, clock clock=2673573176
+Receive: 9 78.675904 78.577187 15: seq: 1d, analog_in_state oid=15 next_clock=2706432704 value=31493
+Receive: 10 78.745911 78.577187 15: seq: 1d, analog_in_state oid=22 next_clock=2712312704 value=31478
+Receive: 11 78.975944 78.577187 15: seq: 1d, analog_in_state oid=15 next_clock=2731632704 value=31495
+Receive: 12 79.046130 78.577187 15: seq: 1d, analog_in_state oid=22 next_clock=2737512704 value=31479
+Receive: 13 79.275985 78.577187 15: seq: 1d, analog_in_state oid=15 next_clock=2756832704 value=31495
+Receive: 14 79.345882 78.577187 15: seq: 1d, analog_in_state oid=22 next_clock=2762712704 value=31479
+Receive: 15 79.561854 79.561346 11: seq: 1e, clock clock=2756244092
+Receive: 16 79.575864 79.561346 15: seq: 1e, analog_in_state oid=15 next_clock=2782032704 value=31498
+Receive: 17 79.645945 79.561346 15: seq: 1e, analog_in_state oid=22 next_clock=2787912704 value=31480
+Receive: 18 79.875926 79.561346 15: seq: 1e, analog_in_state oid=15 next_clock=2807232704 value=31497
+Receive: 19 79.945966 79.561346 15: seq: 1e, analog_in_state oid=22 next_clock=2813112704 value=31481
+Receive: 20 80.175971 79.561346 15: seq: 1e, analog_in_state oid=15 next_clock=2832432704 value=31495
+Receive: 21 80.246049 79.561346 15: seq: 1e, analog_in_state oid=22 next_clock=2838312704 value=31479
+Receive: 22 80.475843 79.561346 15: seq: 1e, analog_in_state oid=15 next_clock=2857632704 value=31495
+Receive: 23 80.546466 79.561346 15: seq: 1e, analog_in_state oid=22 next_clock=2863512704 value=31479
+Receive: 24 80.546640 80.545983 11: seq: 1f, clock clock=2838955202
+Receive: 25 80.775932 80.545983 15: seq: 1f, analog_in_state oid=15 next_clock=2882832704 value=31493
+Receive: 26 80.845947 80.545983 15: seq: 1f, analog_in_state oid=22 next_clock=2888712704 value=31478
+Receive: 27 80.918727 80.545983 13: seq: 1f, stats count=90 sum=70386 sumsq=338900
+Receive: 28 81.075886 80.545983 15: seq: 1f, analog_in_state oid=15 next_clock=2908032704 value=31494
+Receive: 29 81.145920 80.545983 15: seq: 1f, analog_in_state oid=22 next_clock=2913912704 value=31477
+Receive: 30 81.375884 80.545983 15: seq: 1f, analog_in_state oid=15 next_clock=2933232704 value=31494
+Receive: 31 81.445828 80.545983 15: seq: 1f, analog_in_state oid=22 next_clock=2939112704 value=31479
+Receive: 32 81.531461 81.530952 11: seq: 10, clock clock=2921694196
+Receive: 33 81.675853 81.530952 15: seq: 10, analog_in_state oid=15 next_clock=2958432704 value=31497
+Receive: 34 81.745829 81.530952 15: seq: 10, analog_in_state oid=22 next_clock=2964312704 value=31479
+Receive: 35 81.975822 81.530952 15: seq: 10, analog_in_state oid=15 next_clock=2983632704 value=31497
+Receive: 36 82.045894 81.530952 15: seq: 10, analog_in_state oid=22 next_clock=2989512704 value=31480
+Receive: 37 82.276072 81.530952 15: seq: 10, analog_in_state oid=15 next_clock=3008832704 value=31493
+Receive: 38 82.345892 81.530952 15: seq: 10, analog_in_state oid=22 next_clock=3014712704 value=31479
+Receive: 39 82.515559 82.514989 11: seq: 11, clock clock=3004354800
+Receive: 40 82.575873 82.514989 15: seq: 11, analog_in_state oid=15 next_clock=3034032704 value=31498
+Receive: 41 82.645901 82.514989 15: seq: 11, analog_in_state oid=22 next_clock=3039912704 value=31480
+Receive: 42 82.875843 82.514989 15: seq: 11, analog_in_state oid=15 next_clock=3059232704 value=31497
+Receive: 43 82.945841 82.514989 15: seq: 11, analog_in_state oid=22 next_clock=3065112704 value=31480
+Receive: 44 83.175869 82.514989 15: seq: 11, analog_in_state oid=15 next_clock=3084432704 value=31495
+Receive: 45 83.245829 82.514989 15: seq: 11, analog_in_state oid=22 next_clock=3090312704 value=31479
+Receive: 46 83.475788 82.514989 15: seq: 11, analog_in_state oid=15 next_clock=3109632704 value=31495
+Receive: 47 83.500066 83.499539 11: seq: 12, clock clock=3087058631
+Receive: 48 83.545828 83.499539 15: seq: 12, analog_in_state oid=22 next_clock=3115512704 value=31480
+Receive: 49 83.775816 83.499539 15: seq: 12, analog_in_state oid=15 next_clock=3134832704 value=31497
+Receive: 50 83.845858 83.499539 15: seq: 12, analog_in_state oid=22 next_clock=3140712704 value=31479
+Receive: 51 84.075815 83.499539 15: seq: 12, analog_in_state oid=15 next_clock=3160032704 value=31494
+Receive: 52 84.145823 83.499539 15: seq: 12, analog_in_state oid=22 next_clock=3165912704 value=31481
+Receive: 53 84.375830 83.499539 15: seq: 12, analog_in_state oid=15 next_clock=3185232704 value=31494
+Receive: 54 84.445872 83.499539 15: seq: 12, analog_in_state oid=22 next_clock=3191112704 value=31480
+Receive: 55 84.484772 84.484110 11: seq: 13, clock clock=3169767723
+Receive: 56 84.675883 84.484110 15: seq: 13, analog_in_state oid=15 next_clock=3210432704 value=31495
+Receive: 57 84.745798 84.484110 15: seq: 13, analog_in_state oid=22 next_clock=3216312704 value=31480
+Receive: 58 84.975764 84.484110 15: seq: 13, analog_in_state oid=15 next_clock=3235632704 value=31495
+Receive: 59 85.045775 84.484110 15: seq: 13, analog_in_state oid=22 next_clock=3241512704 value=31480
+Receive: 60 85.275843 84.484110 15: seq: 13, analog_in_state oid=15 next_clock=3260832704 value=31496
+Receive: 61 85.345825 84.484110 15: seq: 13, analog_in_state oid=22 next_clock=3266712704 value=31479
+Receive: 62 85.469177 85.468616 11: seq: 14, clock clock=3252464748
+Receive: 63 85.575798 85.468616 15: seq: 14, analog_in_state oid=15 next_clock=3286032704 value=31493
+Receive: 64 85.645771 85.468616 15: seq: 14, analog_in_state oid=22 next_clock=3291912704 value=31480
+Receive: 65 85.875778 85.468616 15: seq: 14, analog_in_state oid=15 next_clock=3311232704 value=31498
+Receive: 66 85.918620 85.468616 13: seq: 14, stats count=88 sum=68912 sumsq=326330
+Receive: 67 85.945802 85.468616 15: seq: 14, analog_in_state oid=22 next_clock=3317112704 value=31480
+Receive: 68 86.175874 85.468616 15: seq: 14, analog_in_state oid=15 next_clock=3336432704 value=31495
+Receive: 69 86.245792 85.468616 15: seq: 14, analog_in_state oid=22 next_clock=3342312704 value=31479
+Receive: 70 86.453246 86.452655 11: seq: 15, clock clock=3335125730
+Receive: 71 86.475814 86.452655 15: seq: 15, analog_in_state oid=15 next_clock=3361632704 value=31497
+Receive: 72 86.549001 86.452655 15: seq: 15, analog_in_state oid=22 next_clock=3367512704 value=31478
+Receive: 73 86.955374 86.452655 15: seq: 15, analog_in_state oid=15 next_clock=3386832704 value=31497
+Receive: 74 86.955390 86.452655 15: seq: 15, analog_in_state oid=22 next_clock=3392712704 value=31478
+Receive: 75 87.075785 86.452655 15: seq: 15, analog_in_state oid=15 next_clock=3412032704 value=31493
+Receive: 76 87.145798 86.452655 15: seq: 15, analog_in_state oid=22 next_clock=3417912704 value=31479
+Receive: 77 87.376094 86.452655 15: seq: 15, analog_in_state oid=15 next_clock=3437232704 value=31493
+Receive: 78 87.706611 86.452655 15: seq: 15, analog_in_state oid=22 next_clock=3443112704 value=31480
+Receive: 79 87.706628 86.452655 15: seq: 15, analog_in_state oid=15 next_clock=3462432704 value=31495
+Receive: 80 87.708026 87.707430 11: seq: 16, clock clock=3440531447
+Receive: 81 87.753573 87.707430 15: seq: 16, analog_in_state oid=22 next_clock=3468312704 value=31478
+Receive: 82 87.975799 87.707430 15: seq: 16, analog_in_state oid=15 next_clock=3487632704 value=31496
+Receive: 83 88.046535 87.707430 15: seq: 16, analog_in_state oid=22 next_clock=3493512704 value=31479
+Receive: 84 88.289086 87.707430 15: seq: 16, analog_in_state oid=15 next_clock=3512832704 value=31495
+Receive: 85 88.355309 87.707430 15: seq: 16, analog_in_state oid=22 next_clock=3518712704 value=31479
+Receive: 86 88.575793 87.707430 15: seq: 16, analog_in_state oid=15 next_clock=3538032704 value=31494
+Receive: 87 88.645727 87.707430 15: seq: 16, analog_in_state oid=22 next_clock=3543912704 value=31479
+Receive: 88 88.706162 88.697835 11: seq: 17, clock clock=3523725515
+Receive: 89 88.878857 88.697835 15: seq: 17, analog_in_state oid=15 next_clock=3563232704 value=31493
+Receive: 90 88.967454 88.697835 15: seq: 17, analog_in_state oid=22 next_clock=3569112704 value=31480
+Receive: 91 89.281255 88.697835 15: seq: 17, analog_in_state oid=15 next_clock=3588432704 value=31495
+Receive: 92 89.281271 88.697835 15: seq: 17, analog_in_state oid=22 next_clock=3594312704 value=31478
+Receive: 93 89.475758 88.697835 15: seq: 17, analog_in_state oid=15 next_clock=3613632704 value=31495
+Receive: 94 89.545740 88.697835 15: seq: 17, analog_in_state oid=22 next_clock=3619512704 value=31480
+Receive: 95 89.961930 88.697835 15: seq: 17, analog_in_state oid=15 next_clock=3638832704 value=31495
+Receive: 96 89.961946 88.697835 15: seq: 17, analog_in_state oid=22 next_clock=3644712704 value=31480
+Receive: 97 89.963397 89.962742 11: seq: 18, clock clock=3629982208
+Receive: 98 90.075695 89.962742 15: seq: 18, analog_in_state oid=15 next_clock=3664032704 value=31496
+Receive: 99 90.145668 89.962742 15: seq: 18, analog_in_state oid=22 next_clock=3669912704 value=31479
+Lost communication with MCU 'mcu'
+Once the underlying issue is corrected, use the
+"FIRMWARE_RESTART" command to reset the firmware, reload the
+config, and restart the host software.
+Printer is shutdown
+
+Reactor garbage collection: (42.367903394, 0.0, 0.0)
+MCU 'rpi' shutdown: 
+clocksync state: mcu_freq=50000000 last_clock=3663516880 clock_est=(65.277 2413875584 50000555.680) min_half_rtt=0.000090 min_rtt_time=78.179 time_avg=65.277(379.778) clock_avg=2413875584.228(18989089351.979) pred_variance=267438411.721 clock_adj=(21.380 49999500.250)
+Dumping serial stats: bytes_write=1304 bytes_read=5999 bytes_retransmit=0 bytes_invalid=0 send_seq=184 receive_seq=184 retransmit_seq=0 srtt=0.001 rttvar=0.002 rto=0.025 ready_bytes=0 upcoming_bytes=5
+Dumping send queue 100 messages
+Sent 0 31.388868 31.388868 9: seq: 14, identify offset=2720 count=40
+Sent 1 31.389894 31.389894 9: seq: 15, identify offset=2760 count=40
+Sent 2 31.390933 31.390933 9: seq: 16, identify offset=2800 count=40
+Sent 3 31.392188 31.392188 9: seq: 17, identify offset=2840 count=40
+Sent 4 31.393318 31.393318 9: seq: 18, identify offset=2880 count=40
+Sent 5 31.394439 31.394439 9: seq: 19, identify offset=2920 count=40
+Sent 6 31.395516 31.395516 9: seq: 1a, identify offset=2960 count=40
+Sent 7 31.396692 31.396692 9: seq: 1b, identify offset=3000 count=40
+Sent 8 31.397776 31.397776 9: seq: 1c, identify offset=3040 count=40
+Sent 9 31.398892 31.398892 9: seq: 1d, identify offset=3080 count=40
+Sent 10 31.400027 31.400027 9: seq: 1e, identify offset=3120 count=40
+Sent 11 31.401257 31.401257 9: seq: 1f, identify offset=3160 count=40
+Sent 12 31.402446 31.402446 9: seq: 10, identify offset=3200 count=40
+Sent 13 31.403521 31.403521 9: seq: 11, identify offset=3240 count=40
+Sent 14 31.404752 31.404752 9: seq: 12, identify offset=3280 count=40
+Sent 15 31.405895 31.405895 9: seq: 13, identify offset=3320 count=40
+Sent 16 31.406915 31.406915 9: seq: 14, identify offset=3360 count=40
+Sent 17 31.407925 31.407925 9: seq: 15, identify offset=3400 count=40
+Sent 18 31.409003 31.409003 9: seq: 16, identify offset=3407 count=40
+Sent 19 31.490539 31.490539 6: seq: 17, get_uptime
+Sent 20 31.543281 31.543281 6: seq: 18, get_clock
+Sent 21 31.594635 31.594635 6: seq: 19, get_clock
+Sent 22 31.646205 31.646205 6: seq: 1a, get_clock
+Sent 23 31.697832 31.697832 6: seq: 1b, get_clock
+Sent 24 31.749359 31.749359 6: seq: 1c, get_clock
+Sent 25 31.800908 31.800908 6: seq: 1d, get_clock
+Sent 26 31.852430 31.852430 6: seq: 1e, get_clock
+Sent 27 31.903808 31.903808 6: seq: 1f, get_clock
+Sent 28 31.906926 31.906926 6: seq: 10, get_clock
+Sent 29 31.933699 31.933699 6: seq: 11, get_config
+Sent 30 31.935793 31.935793 7: seq: 12, allocate_oids count=6
+Sent 31 31.936320 31.936320 7: seq: 13, config_spi_without_cs oid=0
+Sent 32 31.936320 31.936320 8: seq: 14, config_adxl345 oid=1 spi_oid=0
+Sent 33 31.936608 31.936608 7: seq: 15, config_spi_without_cs oid=2
+Sent 34 31.936719 31.936719 8: seq: 16, config_adxl345 oid=3 spi_oid=2
+Sent 35 31.936980 31.936980 12: seq: 17, config_digital_out oid=4 pin=gpiochip2/gpio2 value=0 default_value=0 max_duration=0
+Sent 36 31.937093 31.937093 12: seq: 18, config_digital_out oid=5 pin=gpiochip2/gpio15 value=0 default_value=0 max_duration=0
+Sent 37 31.937630 31.937630 13: seq: 19, spi_set_bus oid=0 spi_bus=spidev0.0 mode=3 rate=5000000
+Sent 38 31.938001 31.938001 13: seq: 1a, spi_set_bus oid=2 spi_bus=spidev0.1 mode=3 rate=5000000
+Sent 39 31.938349 31.938349 11: seq: 1b, finalize_config crc=1708225885
+Sent 40 31.938630 31.938630 6: seq: 1c, get_config
+Sent 41 32.891972 32.891972 6: seq: 1d, get_clock
+Sent 42 33.876930 33.876930 6: seq: 1e, get_clock
+Sent 43 34.861681 34.861681 6: seq: 1f, get_clock
+Sent 44 35.846132 35.846132 6: seq: 10, get_clock
+Sent 45 36.831078 36.831078 6: seq: 11, get_clock
+Sent 46 37.815322 37.815322 6: seq: 12, get_clock
+Sent 47 38.799402 38.799402 6: seq: 13, get_clock
+Sent 48 39.784010 39.784010 6: seq: 14, get_clock
+Sent 49 40.768386 40.768386 6: seq: 15, get_clock
+Sent 50 41.753273 41.753273 6: seq: 16, get_clock
+Sent 51 42.737574 42.737574 6: seq: 17, get_clock
+Sent 52 43.722219 43.722219 6: seq: 18, get_clock
+Sent 53 44.706233 44.706233 6: seq: 19, get_clock
+Sent 54 45.690486 45.690486 6: seq: 1a, get_clock
+Sent 55 46.675344 46.675344 6: seq: 1b, get_clock
+Sent 56 47.659789 47.659789 6: seq: 1c, get_clock
+Sent 57 48.644401 48.644401 6: seq: 1d, get_clock
+Sent 58 49.628612 49.628612 6: seq: 1e, get_clock
+Sent 59 50.613505 50.613505 6: seq: 1f, get_clock
+Sent 60 51.598356 51.598356 6: seq: 10, get_clock
+Sent 61 52.582887 52.582887 6: seq: 11, get_clock
+Sent 62 53.567588 53.567588 6: seq: 12, get_clock
+Sent 63 54.551817 54.551817 6: seq: 13, get_clock
+Sent 64 55.535891 55.535891 6: seq: 14, get_clock
+Sent 65 56.520610 56.520610 6: seq: 15, get_clock
+Sent 66 57.505351 57.505351 6: seq: 16, get_clock
+Sent 67 58.489859 58.489859 6: seq: 17, get_clock
+Sent 68 59.473941 59.473941 6: seq: 18, get_clock
+Sent 69 60.458480 60.458480 6: seq: 19, get_clock
+Sent 70 61.442592 61.442592 6: seq: 1a, get_clock
+Sent 71 62.426704 62.426704 6: seq: 1b, get_clock
+Sent 72 63.410904 63.410904 6: seq: 1c, get_clock
+Sent 73 64.395021 64.395021 6: seq: 1d, get_clock
+Sent 74 65.379700 65.379700 6: seq: 1e, get_clock
+Sent 75 66.363943 66.363943 6: seq: 1f, get_clock
+Sent 76 67.349017 67.349017 6: seq: 10, get_clock
+Sent 77 68.333630 68.333630 6: seq: 11, get_clock
+Sent 78 69.318670 69.318670 6: seq: 12, get_clock
+Sent 79 70.303535 70.303535 6: seq: 13, get_clock
+Sent 80 71.287765 71.287765 6: seq: 14, get_clock
+Sent 81 72.272516 72.272516 6: seq: 15, get_clock
+Sent 82 73.256740 73.256740 6: seq: 16, get_clock
+Sent 83 74.241694 74.241694 6: seq: 17, get_clock
+Sent 84 75.226207 75.226207 6: seq: 18, get_clock
+Sent 85 76.210261 76.210261 6: seq: 19, get_clock
+Sent 86 77.194467 77.194467 6: seq: 1a, get_clock
+Sent 87 78.179210 78.179210 6: seq: 1b, get_clock
+Sent 88 79.163479 79.163479 6: seq: 1c, get_clock
+Sent 89 80.147881 80.147881 6: seq: 1d, get_clock
+Sent 90 81.132406 81.132406 6: seq: 1e, get_clock
+Sent 91 82.117676 82.117676 6: seq: 1f, get_clock
+Sent 92 83.101658 83.101658 6: seq: 10, get_clock
+Sent 93 84.086450 84.086450 6: seq: 11, get_clock
+Sent 94 85.071056 85.071056 6: seq: 12, get_clock
+Sent 95 86.055993 86.055993 6: seq: 13, get_clock
+Sent 96 87.040440 87.040440 6: seq: 14, get_clock
+Sent 97 88.034141 88.034141 6: seq: 15, get_clock
+Sent 98 89.281743 89.281743 6: seq: 16, get_clock
+Sent 99 90.269767 90.269767 6: seq: 17, get_clock
+Dumping receive queue 100 messages
+Receive: 0 31.391201 31.390933 49: seq: 17, identify_response offset=2800 data=b'k6M\xe4s\xeb\x08g\xccb\x02\xd2d\x93\xa8x\x8cC\xe3\xd5\x05\x9fi\xd4{?\xdcP\xc6\xe6\x138\x10`\x9c\x8a\x9e\x83\xbd~'
+Receive: 1 31.392459 31.392188 49: seq: 18, identify_response offset=2840 data=b'\xe9\x08\xe0,\x14\xb9tv\xc6\xc0\x0c7D\xc9J\xc9\xd4\r\x06\x9f\xe1\xf1\xba\x84\x01K\x99\x7fl\xe4\xd8\xe1\xad\x12\xe5\xb1x\xe3\xa8\x14'
+Receive: 2 31.393572 31.393318 49: seq: 19, identify_response offset=2880 data=b'\xed\xa8\xfe`{q}S\x99\xd9;\x1c\x18\xa1\x06H\xf5\x00*\xa9U\x11R\xb2\x07\x07\x96\x84v\xae\xd9l\x0e0\xac\xfaE\x83\xc5d'
+Receive: 3 31.394671 31.394439 49: seq: 1a, identify_response offset=2920 data=b'\xfaw\x0e\x15\xbd\xc8H\xac\x9cc\x94\xa7\xf8S\x02YMn\xaf\xe2*\xc1\xa8\x13U\x17=b\x95\xe8\xf8%\x17\x8f1Eq|y\xd3'
+Receive: 4 31.395770 31.395516 49: seq: 1b, identify_response offset=2960 data=b'\xd0\x8d\xa2\x1e^\xed\x01\xe4\x1e\xbcN!\xca\x85\x1bk\x14\xac\x92D\xa1}\xddH\x15\xdc\xa7F\x9a\xa8\x98\x00\x8d4\xcd\xe0;\xfa\xac\xee'
+Receive: 5 31.396926 31.396692 49: seq: 1c, identify_response offset=3000 data=b'\x96%l\x03\xc8/\xf0\x17\x1e\xefn~|\x88\x16\xaa\xd0\x05PIr\xe9\xee\x93\xb9h&\xe5R\x15\xa2\xf3c\xe5\xb5S\x0c\x99\xe6g'
+Receive: 6 31.398005 31.397776 49: seq: 1d, identify_response offset=3040 data=b'\x19\x13\x91\xc2+F3E\xa1\n\xc8):\x05!.Wp8uO\xfd\x0c/\xc0\xeaK\xd5$\xd4{\x0f\xf6\x99-S\x85\x1e\xc8\x07'
+Receive: 7 31.399127 31.398892 49: seq: 1e, identify_response offset=3080 data=b'\xb9\xad\xdb\xa1\xb8\xdatU\xe5~Mq-\xa2?ro~\xc4\xf4\xe6\x95MBX\xb4\x8ff\xa7\x08.t\xfd\xdb\xd0^3\x8a\xa0\xb0'
+Receive: 8 31.400349 31.400027 49: seq: 1f, identify_response offset=3120 data=b'J\xb2\x99{\xe0\x9ah\xb5k\xf7p<\x0f\xc7\xf0\xdf\xcfp\xea\xc0\xbd5\xe5f\x9b\xbc\x02\xb3j\x1b\xabf\xee=\xc7\xe3\xb5\x0f;T'
+Receive: 9 31.401531 31.401257 49: seq: 10, identify_response offset=3160 data=b'\x82z\x83\xbc\xf8\xf2\xe3\xec\xc9\xe6\x97(mRD\x91/\xd6\xcf\xbd\x15\x98g\x1e\xdf\x98\x81\xf7x3\xb5\x99\x1c\xcbR\xbdP\xe1\xfa\x10'
+Receive: 10 31.402688 31.402446 49: seq: 11, identify_response offset=3200 data=b'\x98\x81\x9e\xfek\xe7)&+\n\x16p\x1f\xad?M\xcah\x12a]S\xf2\xd9\xf3\xcf\xe9j*2\xa9\xac\xbb\xa2\xb0\xae}\x9bZ\x15'
+Receive: 11 31.403759 31.403521 49: seq: 12, identify_response offset=3240 data=b'\xd5V\xfd\x11\xef\xc7\xcd\x86C~\xa5\xa7\x11\xb8qA\xb8\xc8\r\xf2\x90\xda,X\x9es\xf9\xd8<\xe5\x1c7!\xe2\xed\xc3B\xe9\xc1N'
+Receive: 12 31.405008 31.404752 49: seq: 13, identify_response offset=3280 data=b'\xfa\xa5\xf7\xc9\x96.\xa7\x95\xc9\xbfu\x01U\x81\x84\xd8\xa3\x00\xfa)^\rP1\xe9\xdc^\x8e{\xfdO\xfe\xa1\xbd{\xe5\xca\x8d\xb3Z'
+Receive: 13 31.406127 31.405895 49: seq: 14, identify_response offset=3320 data=b'$=\xb4\td\ngQ\xe8\x1f\x9c\x83\xd1\x9c\x03\xb5\xd1\xa1+Q\x1e.\x02\x8b\x93\xb4\x80\xc4/;:g+\x0b[\x03=\xfe\xb0\xe8'
+Receive: 14 31.407148 31.406915 49: seq: 15, identify_response offset=3360 data=b"\x07\x92%\x86Yu'\xa6\x1fV\x8c\x13j\x06aP\xff&\x0e\xc2\xe0\xc3\xf2M\x80?\x83\x8b\xd7\xcb\xd3m\x12\xaf\xa3\xfbjs\x1f/"
+Receive: 15 31.408173 31.407925 16: seq: 16, identify_response offset=3400 data=b'>\xff\x07\xb5.\t\xe0'
+Receive: 16 31.409246 31.409003 9: seq: 17, identify_response offset=3407 data=b''
+Receive: 17 31.490777 31.490539 12: seq: 18, uptime high=0 clock=724522085
+Receive: 18 31.543481 31.543281 11: seq: 19, clock clock=727157629
+Receive: 19 31.594980 31.594635 11: seq: 1a, clock clock=729729720
+Receive: 20 31.646567 31.646205 11: seq: 1b, clock clock=732306915
+Receive: 21 31.698155 31.697832 11: seq: 1c, clock clock=734889054
+Receive: 22 31.749593 31.749359 11: seq: 1d, clock clock=737463157
+Receive: 23 31.801196 31.800908 11: seq: 1e, clock clock=740041592
+Receive: 24 31.852679 31.852430 11: seq: 1f, clock clock=742617547
+Receive: 25 31.904058 31.903808 11: seq: 10, clock clock=745186269
+Receive: 26 31.907212 31.906926 11: seq: 11, clock clock=745341015
+Receive: 27 31.934002 31.933699 10: seq: 12, config is_config=0 crc=0 is_shutdown=0 move_count=0
+Receive: 28 31.938771 31.938630 15: seq: 1d, config is_config=1 crc=1708225885 is_shutdown=0 move_count=1024
+Receive: 29 32.100548 31.938630 15: seq: 1d, stats count=160 sum=262667 sumsq=2867690
+Receive: 30 32.892305 32.891972 11: seq: 1e, clock clock=794594986
+Receive: 31 33.877201 33.876930 11: seq: 1f, clock clock=843841417
+Receive: 32 34.861906 34.861681 11: seq: 10, clock clock=893079346
+Receive: 33 35.846543 35.846132 11: seq: 11, clock clock=942304952
+Receive: 34 36.831269 36.831078 11: seq: 12, clock clock=991550494
+Receive: 35 37.200467 36.831078 13: seq: 12, stats count=56 sum=21157 sumsq=109680
+Receive: 36 37.815545 37.815322 11: seq: 13, clock clock=1040763806
+Receive: 37 38.799695 38.799402 11: seq: 14, clock clock=1089969127
+Receive: 38 39.784374 39.784010 11: seq: 15, clock clock=1139204110
+Receive: 39 40.768634 40.768386 11: seq: 16, clock clock=1188417320
+Receive: 40 41.753612 41.753273 11: seq: 17, clock clock=1237665385
+Receive: 41 42.200401 41.753273 13: seq: 17, stats count=55 sum=21580 sumsq=138951
+Receive: 42 42.737877 42.737574 11: seq: 18, clock clock=1286880287
+Receive: 43 43.722526 43.722219 11: seq: 19, clock clock=1336112733
+Receive: 44 44.706621 44.706233 11: seq: 1a, clock clock=1385320518
+Receive: 45 45.690720 45.690486 11: seq: 1b, clock clock=1434527180
+Receive: 46 46.675589 46.675344 11: seq: 1c, clock clock=1483770476
+Receive: 47 47.300355 46.675344 13: seq: 1c, stats count=56 sum=24368 sumsq=256152
+Receive: 48 47.659993 47.659789 11: seq: 1d, clock clock=1532993224
+Receive: 49 48.644757 48.644401 11: seq: 1e, clock clock=1582224401
+Receive: 50 49.628803 49.628612 11: seq: 1f, clock clock=1631433790
+Receive: 51 50.613771 50.613505 11: seq: 10, clock clock=1680682540
+Receive: 52 51.598678 51.598356 11: seq: 11, clock clock=1729927892
+Receive: 53 52.300305 51.598356 13: seq: 11, stats count=55 sum=20347 sumsq=118543
+Receive: 54 52.583133 52.582887 11: seq: 12, clock clock=1779150830
+Receive: 55 53.568129 53.567588 11: seq: 13, clock clock=1828390363
+Receive: 56 54.552371 54.551817 11: seq: 14, clock clock=1877604973
+Receive: 57 55.536224 55.535891 11: seq: 15, clock clock=1926805558
+Receive: 58 56.520943 56.520610 11: seq: 16, clock clock=1976041358
+Receive: 59 57.400202 56.520610 13: seq: 16, stats count=56 sum=27260 sumsq=233121
+Receive: 60 57.505638 57.505351 11: seq: 17, clock clock=2025276633
+Receive: 61 58.490046 58.489859 11: seq: 18, clock clock=2074500140
+Receive: 62 59.474186 59.473941 11: seq: 19, clock clock=2123707195
+Receive: 63 60.458844 60.458480 11: seq: 1a, clock clock=2172940093
+Receive: 64 61.442854 61.442592 11: seq: 1b, clock clock=2222141637
+Receive: 65 62.400134 61.442592 13: seq: 1b, stats count=55 sum=20225 sumsq=103397
+Receive: 66 62.426934 62.426704 11: seq: 1c, clock clock=2271344434
+Receive: 67 63.411104 63.410904 11: seq: 1d, clock clock=2320554815
+Receive: 68 64.395364 64.395021 11: seq: 1e, clock clock=2369767194
+Receive: 69 65.379970 65.379700 11: seq: 1f, clock clock=2418998750
+Receive: 70 66.364152 66.363943 11: seq: 10, clock clock=2468209321
+Receive: 71 67.349599 67.349017 11: seq: 11, clock clock=2517473092
+Receive: 72 67.400287 67.349017 13: seq: 11, stats count=56 sum=24397 sumsq=222888
+Receive: 73 68.334236 68.333630 11: seq: 12, clock clock=2566708221
+Receive: 74 69.319235 69.318670 11: seq: 13, clock clock=2615958109
+Receive: 75 70.304278 70.303535 11: seq: 14, clock clock=2665208405
+Receive: 76 71.288040 71.287765 11: seq: 15, clock clock=2714405736
+Receive: 77 72.272802 72.272516 11: seq: 16, clock clock=2763645240
+Receive: 78 72.499995 72.272516 13: seq: 16, stats count=56 sum=30669 sumsq=310115
+Receive: 79 73.256998 73.256740 11: seq: 17, clock clock=2812855198
+Receive: 80 74.241967 74.241694 11: seq: 18, clock clock=2862104677
+Receive: 81 75.226976 75.226207 11: seq: 19, clock clock=2911343642
+Receive: 82 76.210593 76.210261 11: seq: 1a, clock clock=2960535998
+Receive: 83 77.194726 77.194467 11: seq: 1b, clock clock=3009743798
+Receive: 84 77.599902 77.194467 13: seq: 1b, stats count=56 sum=25490 sumsq=223341
+Receive: 85 78.179391 78.179210 11: seq: 1c, clock clock=3058979131
+Receive: 86 79.163715 79.163479 11: seq: 1d, clock clock=3108193566
+Receive: 87 80.148116 80.147881 11: seq: 1e, clock clock=3157413310
+Receive: 88 81.132613 81.132406 11: seq: 1f, clock clock=3206642605
+Receive: 89 82.118274 82.117676 11: seq: 10, clock clock=3255916702
+Receive: 90 82.599920 82.117676 13: seq: 10, stats count=55 sum=20693 sumsq=127233
+Receive: 91 83.101860 83.101658 11: seq: 11, clock clock=3305102976
+Receive: 92 84.086672 84.086450 11: seq: 12, clock clock=3354347045
+Receive: 93 85.071296 85.071056 11: seq: 13, clock clock=3403577770
+Receive: 94 86.056282 86.055993 11: seq: 14, clock clock=3452823355
+Receive: 95 87.040648 87.040440 11: seq: 15, clock clock=3502045009
+Receive: 96 87.707335 87.040440 13: seq: 15, stats count=55 sum=19223 sumsq=92704
+Receive: 97 88.041936 88.034141 11: seq: 16, clock clock=3551734050
+Receive: 98 89.282316 89.281743 11: seq: 17, clock clock=3614112640
+Receive: 99 90.273159 90.269767 11: seq: 18, clock clock=3663516880
+gcode state: absolute_coord=True absolute_extrude=True base_position=[0.0, 0.0, 0.0, 0.0] last_position=[0.0, 0.0, 0.0, 0.0] homing_position=[0.0, 0.0, 0.0, 0.0] speed_factor=0.016666666666666666 extrude_factor=1.0 speed=25.0
+Stats 95.0: gcodein=0 mcu: mcu_awake=0.001 mcu_task_avg=0.000009 mcu_task_stddev=0.000007 bytes_write=3003 bytes_read=13257 bytes_retransmit=0 bytes_invalid=0 send_seq=280 receive_seq=280 retransmit_seq=0 srtt=0.002 rttvar=0.002 rto=0.025 ready_bytes=0 upcoming_bytes=5 freq=84001605 rpi: mcu_awake=0.000 mcu_task_avg=0.000007 mcu_task_stddev=0.000011 bytes_write=1304 bytes_read=5999 bytes_retransmit=0 bytes_invalid=0 send_seq=184 receive_seq=184 retransmit_seq=0 srtt=0.001 rttvar=0.002 rto=0.025 ready_bytes=0 upcoming_bytes=4 freq=50000555 adj=49999500 heater_bed: target=0 temp=21.6 pwm=0.000 print_time=44.118 buffer_time=0.000 print_stall=0 extruder: target=0 temp=21.9 pwm=0.000 sysload=1.83 cputime=10.462 memavail=667680
+Timeout with MCU 'rpi' (eventtime=95.959393)
+Stats 96.0: gcodein=0 mcu: mcu_awake=0.001 mcu_task_avg=0.000009 mcu_task_stddev=0.000007 bytes_write=3003 bytes_read=13257 bytes_retransmit=0 bytes_invalid=0 send_seq=280 receive_seq=280 retransmit_seq=0 srtt=0.002 rttvar=0.002 rto=0.025 ready_bytes=0 upcoming_bytes=7 freq=84001605 rpi: mcu_awake=0.000 mcu_task_avg=0.000007 mcu_task_stddev=0.000011 bytes_write=1304 bytes_read=5999 bytes_retransmit=0 bytes_invalid=0 send_seq=184 receive_seq=184 retransmit_seq=0 srtt=0.001 rttvar=0.002 rto=0.025 ready_bytes=0 upcoming_bytes=6 freq=50000555 adj=49999525 heater_bed: target=0 temp=21.6 pwm=0.000 print_time=44.118 buffer_time=0.000 print_stall=0 extruder: target=0 temp=21.9 pwm=0.000 sysload=2.65 cputime=11.440 memavail=667248
+Stats 97.0: gcodein=0 mcu: mcu_awake=0.001 mcu_task_avg=0.000009 mcu_task_stddev=0.000007 bytes_write=3003 bytes_read=13257 bytes_retransmit=0 bytes_invalid=0 send_seq=280 receive_seq=280 retransmit_seq=0 srtt=0.002 rttvar=0.002 rto=0.025 ready_bytes=0 upcoming_bytes=8 freq=84001605 rpi: mcu_awake=0.000 mcu_task_avg=0.000007 mcu_task_stddev=0.000011 bytes_write=1304 bytes_read=5999 bytes_retransmit=0 bytes_invalid=0 send_seq=184 receive_seq=184 retransmit_seq=0 srtt=0.001 rttvar=0.002 rto=0.025 ready_bytes=0 upcoming_bytes=7 freq=50000555 adj=49999544 heater_bed: target=0 temp=21.6 pwm=0.000 print_time=44.118 buffer_time=0.000 print_stall=0 extruder: target=0 temp=21.9 pwm=0.000 sysload=2.65 cputime=12.440 memavail=666600
+Stats 98.0: gcodein=0 mcu: mcu_awake=0.001 mcu_task_avg=0.000009 mcu_task_stddev=0.000007 bytes_write=3003 bytes_read=13257 bytes_retransmit=0 bytes_invalid=0 send_seq=280 receive_seq=280 retransmit_seq=0 srtt=0.002 rttvar=0.002 rto=0.025 ready_bytes=0 upcoming_bytes=9 freq=84001605 rpi: mcu_awake=0.000 mcu_task_avg=0.000007 mcu_task_stddev=0.000011 bytes_write=1304 bytes_read=5999 bytes_retransmit=0 bytes_invalid=0 send_seq=184 receive_seq=184 retransmit_seq=0 srtt=0.001 rttvar=0.002 rto=0.025 ready_bytes=0 upcoming_bytes=8 freq=50000555 adj=49999558 heater_bed: target=0 temp=21.6 pwm=0.000 print_time=44.118 buffer_time=0.000 print_stall=0 extruder: target=0 temp=21.9 pwm=0.000 sysload=2.65 cputime=13.440 memavail=665736
+Stats 99.0: gcodein=0 mcu: mcu_awake=0.001 mcu_task_avg=0.000009 mcu_task_stddev=0.000007 bytes_write=3003 bytes_read=13257 bytes_retransmit=0 bytes_invalid=0 send_seq=280 receive_seq=280 retransmit_seq=0 srtt=0.002 rttvar=0.002 rto=0.025 ready_bytes=0 upcoming_bytes=10 freq=84001605 rpi: mcu_awake=0.000 mcu_task_avg=0.000007 mcu_task_stddev=0.000011 bytes_write=1304 bytes_read=5999 bytes_retransmit=0 bytes_invalid=0 send_seq=184 receive_seq=184 retransmit_seq=0 srtt=0.001 rttvar=0.002 rto=0.025 ready_bytes=0 upcoming_bytes=9 freq=50000555 adj=49999569 heater_bed: target=0 temp=21.6 pwm=0.000 print_time=44.118 buffer_time=0.000 print_stall=0 extruder: target=0 temp=21.9 pwm=0.000 sysload=2.65 cputime=14.440 memavail=664648
+Command {update_git_script} timed out
+Lost communication with MCU 'mcu'
+Once the underlying issue is corrected, use the
+"FIRMWARE_RESTART" command to reset the firmware, reload the
+config, and restart the host software.
+Printer is shutdown
+
+Lost communication with MCU 'mcu'
+Once the underlying issue is corrected, use the
+"FIRMWARE_RESTART" command to reset the firmware, reload the
+config, and restart the host software.
+Printer is shutdown
+
+Resetting prediction variance 176.561: freq=50000555 diff=-4295029360 stddev=16353.544
+Resetting prediction variance 176.561: freq=29898822 diff=-1989429487 stddev=50000.000
+Resetting prediction variance 176.561: freq=23705833 diff=-1279114900 stddev=50000.000
+Resetting prediction variance 176.561: freq=20697761 diff=-934099333 stddev=50000.000
+Resetting prediction variance 176.561: freq=18921062 diff=-730317884 stddev=50000.000
+Resetting prediction variance 176.561: freq=17748654 diff=-595846575 stddev=50000.000
+Resetting prediction variance 176.561: freq=16917457 diff=-500510993 stddev=50000.000
+Resetting prediction variance 176.561: freq=16297749 diff=-429432352 stddev=50000.000
+Resetting prediction variance 176.561: freq=15818166 diff=-374425709 stddev=50000.000
+Resetting prediction variance 176.561: freq=15436208 diff=-330616204 stddev=50000.000
+Resetting prediction variance 176.561: freq=15124981 diff=-294919348 stddev=50000.000
+Resetting prediction variance 176.561: freq=14866639 diff=-265288238 stddev=50000.000
+Resetting prediction variance 176.561: freq=14648874 diff=-240311100 stddev=50000.000
+Resetting prediction variance 176.561: freq=14462920 diff=-218982679 stddev=50000.000
+Resetting prediction variance 176.561: freq=14302368 diff=-200567739 stddev=50000.000
+Resetting prediction variance 176.561: freq=14162421 diff=-184516103 stddev=50000.000
+Resetting prediction variance 176.561: freq=14039418 diff=-170407878 stddev=50000.000
+Resetting prediction variance 176.561: freq=13930517 diff=-157917035 stddev=50000.000
+Resetting prediction variance 176.561: freq=13833476 diff=-146786575 stddev=50000.000
+Resetting prediction variance 176.561: freq=13746505 diff=-136811170 stddev=50000.000
+Resetting prediction variance 176.561: freq=13668158 diff=-127824392 stddev=50000.000
+Resetting prediction variance 176.561: freq=13597251 diff=-119691365 stddev=50000.000
+Resetting prediction variance 176.561: freq=13532808 diff=-112299697 stddev=50000.000
+Resetting prediction variance 176.561: freq=13474015 diff=-105556101 stddev=50000.000
+Resetting prediction variance 176.561: freq=13420191 diff=-99382302 stddev=50000.000
+Resetting prediction variance 176.561: freq=13370758 diff=-93712301 stddev=50000.000
+Resetting prediction variance 176.561: freq=13325225 diff=-88489605 stddev=50000.000
+Resetting prediction variance 176.561: freq=13283172 diff=-83665940 stddev=50000.000
+Resetting prediction variance 176.561: freq=13244235 diff=-79199837 stddev=50000.000
+Resetting prediction variance 176.561: freq=13208101 diff=-75055211 stddev=50000.000
+Resetting prediction variance 176.561: freq=13174497 diff=-71200681 stddev=50000.000
+Resetting prediction variance 176.561: freq=13143182 diff=-67608814 stddev=50000.000
+Resetting prediction variance 176.561: freq=13113948 diff=-64255337 stddev=50000.000
+Resetting prediction variance 176.561: freq=13086608 diff=-61119333 stddev=50000.000
+Resetting prediction variance 176.561: freq=13060999 diff=-58181821 stddev=50000.000
+Resetting prediction variance 176.561: freq=13036974 diff=-55425972 stddev=50000.000
+Resetting prediction variance 176.561: freq=13014404 diff=-52837030 stddev=50000.000
+Resetting prediction variance 176.561: freq=12993172 diff=-50401543 stddev=50000.000
+Resetting prediction variance 176.561: freq=12973173 diff=-48107508 stddev=50000.000
+Resetting prediction variance 176.561: freq=12954315 diff=-45944311 stddev=50000.000
+Resetting prediction variance 176.561: freq=12936512 diff=-43902060 stddev=50000.000
+Resetting prediction variance 176.561: freq=12919686 diff=-41971991 stddev=50000.000
+Resetting prediction variance 176.561: freq=12903770 diff=-40146228 stddev=50000.000
+Resetting prediction variance 176.561: freq=12888699 diff=-38417452 stddev=50000.000
+Resetting prediction variance 176.561: freq=12874416 diff=-36778955 stddev=50000.000
+Resetting prediction variance 176.561: freq=12860869 diff=-35224879 stddev=50000.000
+Resetting prediction variance 176.561: freq=12848008 diff=-33749553 stddev=50000.000
+Resetting prediction variance 176.561: freq=12835791 diff=-32347948 stddev=50000.000
+Resetting prediction variance 176.561: freq=12824175 diff=-31015536 stddev=50000.000
+Resetting prediction variance 176.561: freq=12813126 diff=-29747888 stddev=50000.000
+Resetting prediction variance 176.561: freq=12802606 diff=-28541094 stddev=50000.000
+Resetting prediction variance 176.561: freq=12792587 diff=-27391636 stddev=50000.000
+Resetting prediction variance 176.561: freq=12783036 diff=-26295998 stddev=50000.000
+Resetting prediction variance 176.561: freq=12773929 diff=-25251099 stddev=50000.000
+Resetting prediction variance 176.561: freq=12765239 diff=-24254166 stddev=50000.000
+Resetting prediction variance 176.561: freq=12756942 diff=-23302368 stddev=50000.000
+Resetting prediction variance 176.561: freq=12749019 diff=-22393242 stddev=50000.000
+Resetting prediction variance 176.561: freq=12741447 diff=-21524585 stddev=50000.000
+Resetting prediction variance 176.561: freq=12734208 diff=-20694081 stddev=50000.000
+Resetting prediction variance 176.561: freq=12727285 diff=-19898881 stddev=50000.000
+Resetting prediction variance 176.561: freq=12720662 diff=-19138779 stddev=50000.000
+Resetting prediction variance 176.561: freq=12714322 diff=-18411394 stddev=50000.000
+Resetting prediction variance 176.561: freq=12708251 diff=-17714848 stddev=50000.000
+Resetting prediction variance 176.561: freq=12702436 diff=-17046220 stddev=50000.000
+Resetting prediction variance 176.561: freq=12696865 diff=-16406909 stddev=50000.000
+Resetting prediction variance 176.561: freq=12691524 diff=-15794196 stddev=50000.000
+Resetting prediction variance 176.561: freq=12686404 diff=-15206706 stddev=50000.000
+Resetting prediction variance 176.561: freq=12681493 diff=-14643228 stddev=50000.000
+Resetting prediction variance 176.561: freq=12676782 diff=-14102598 stddev=50000.000
+Resetting prediction variance 176.561: freq=12672260 diff=-13583801 stddev=50000.000
+Resetting prediction variance 176.561: freq=12667920 diff=-13085778 stddev=50000.000
+Resetting prediction variance 176.561: freq=12663753 diff=-12607605 stddev=50000.000
+Resetting prediction variance 176.561: freq=12659751 diff=-12148363 stddev=50000.000
+Resetting prediction variance 176.561: freq=12655906 diff=-11707199 stddev=50000.000
+Resetting prediction variance 176.561: freq=12652212 diff=-11283318 stddev=50000.000
+Resetting prediction variance 176.561: freq=12648662 diff=-10875927 stddev=50000.000
+Resetting prediction variance 176.561: freq=12645249 diff=-10484315 stddev=50000.000
+Resetting prediction variance 176.561: freq=12641968 diff=-10107797 stddev=50000.000
+Resetting prediction variance 176.561: freq=12638813 diff=-9745718 stddev=50000.000
+Resetting prediction variance 176.561: freq=12635779 diff=-9397462 stddev=50000.000
+Resetting prediction variance 176.561: freq=12632860 diff=-9062440 stddev=50000.000
+Resetting prediction variance 176.561: freq=12630051 diff=-8740094 stddev=50000.000
+Resetting prediction variance 176.561: freq=12627348 diff=-8429892 stddev=50000.000
+Resetting prediction variance 176.561: freq=12624747 diff=-8131315 stddev=50000.000
+Resetting prediction variance 176.561: freq=12622243 diff=-7843912 stddev=50000.000
+Resetting prediction variance 176.561: freq=12619832 diff=-7567224 stddev=50000.000
+Resetting prediction variance 176.561: freq=12617511 diff=-7300785 stddev=50000.000
+Resetting prediction variance 176.558: freq=84001605 diff=-4294904342 stddev=26569.921
+Resetting prediction variance 176.558: freq=63929446 diff=-1981456216 stddev=84000.000
+Resetting prediction variance 176.558: freq=57777715 diff=-1272428435 stddev=84000.000
+Resetting prediction variance 176.558: freq=54795115 diff=-928663981 stddev=84000.000
+Resetting prediction variance 176.558: freq=53035126 diff=-725813368 stddev=84000.000
+Resetting prediction variance 176.558: freq=51874422 diff=-592034216 stddev=84000.000
+Resetting prediction variance 176.558: freq=51051848 diff=-497226764 stddev=84000.000
+Resetting prediction variance 176.558: freq=50438744 diff=-426562167 stddev=84000.000
+Resetting prediction variance 176.558: freq=49964376 diff=-371886876 stddev=84000.000
+Resetting prediction variance 176.560: freq=49586636 diff=-328292433 stddev=84000.000
+Resetting prediction variance 176.560: freq=49278938 diff=-292826994 stddev=84000.000
+Resetting prediction variance 176.560: freq=49023556 diff=-263391929 stddev=84000.000
+Resetting prediction variance 176.850: freq=12615276 diff=3714085 stddev=50000.000
+Resetting prediction variance 177.529: freq=48808306 diff=-204555744 stddev=84000.000
+Resetting prediction variance 177.834: freq=12616467 diff=40400271 stddev=50000.000
+Resetting prediction variance 178.513: freq=48648917 diff=-151327380 stddev=84000.000
+Resetting prediction variance 178.819: freq=12631542 diff=75743414 stddev=50000.000
+Resetting prediction variance 179.497: freq=48536003 diff=-103304225 stddev=84000.000
+Resetting prediction variance 179.804: freq=12663875 diff=109739255 stddev=50000.000
+Resetting prediction variance 180.482: freq=48461918 diff=-59688310 stddev=84000.000
+Resetting prediction variance 180.788: freq=12716740 diff=142379203 stddev=50000.000
+Resetting prediction variance 181.467: freq=48420642 diff=-19824594 stddev=84000.000
+Resetting prediction variance 181.773: freq=12793291 diff=173588016 stddev=50000.000
+Resetting prediction variance 182.451: freq=48407384 diff=16782627 stddev=84000.000
+Resetting prediction variance 182.757: freq=12896477 diff=203353326 stddev=50000.000
+Resetting prediction variance 183.436: freq=48418268 diff=50524008 stddev=84000.000
+Resetting prediction variance 183.742: freq=13029052 diff=231644608 stddev=50000.000
+Resetting prediction variance 184.420: freq=48450118 diff=81770816 stddev=84000.000
+Resetting prediction variance 184.727: freq=13193524 diff=258409276 stddev=50000.000
+Resetting prediction variance 185.405: freq=48500338 diff=110818915 stddev=84000.000
+Resetting prediction variance 185.711: freq=13392093 diff=283584080 stddev=50000.000
+Resetting prediction variance 186.390: freq=48566778 diff=137877421 stddev=84000.000
+Resetting prediction variance 186.696: freq=13626596 diff=307159421 stddev=50000.000
+Resetting prediction variance 187.374: freq=48647625 diff=163134396 stddev=84000.000
+Resetting prediction variance 187.680: freq=13898540 diff=329095163 stddev=50000.000
+Resetting prediction variance 188.359: freq=48741345 diff=186772657 stddev=84000.000
+Resetting prediction variance 188.665: freq=14209026 diff=349330539 stddev=50000.000
+Resetting prediction variance 189.343: freq=48846640 diff=208920655 stddev=84000.000
+Resetting prediction variance 189.649: freq=14558684 diff=367871013 stddev=50000.000
+Resetting prediction variance 190.327: freq=48962396 diff=229733179 stddev=84000.000
+Resetting prediction variance 190.634: freq=14947753 diff=384711913 stddev=50000.000
+Resetting prediction variance 191.313: freq=49087671 diff=249318650 stddev=84000.000
+Resetting prediction variance 191.619: freq=15376042 diff=399764286 stddev=50000.000
+Resetting prediction variance 192.297: freq=49221654 diff=267726453 stddev=84000.000
+Resetting prediction variance 192.603: freq=15842793 diff=413100764 stddev=50000.000
+Resetting prediction variance 193.281: freq=49363616 diff=285046859 stddev=84000.000
+Resetting prediction variance 193.588: freq=16346918 diff=424711341 stddev=50000.000
+Resetting prediction variance 194.266: freq=49512924 diff=301393925 stddev=84000.000
+Resetting prediction variance 194.573: freq=16886892 diff=434607962 stddev=50000.000
+Resetting prediction variance 195.251: freq=49669049 diff=316814028 stddev=84000.000
+Resetting prediction variance 195.557: freq=17460781 diff=442824905 stddev=50000.000
+Resetting prediction variance 196.235: freq=49831515 diff=331335318 stddev=84000.000
+Resetting prediction variance 196.542: freq=18066313 diff=449417482 stddev=50000.000
+Resetting prediction variance 197.220: freq=49999886 diff=345042572 stddev=84000.000
+Resetting prediction variance 197.527: freq=18700949 diff=454431036 stddev=50000.000
+Resetting prediction variance 198.205: freq=50173794 diff=357959041 stddev=84000.000
+Resetting prediction variance 198.511: freq=19361893 diff=457916360 stddev=50000.000
+Resetting prediction variance 199.189: freq=50352900 diff=370145109 stddev=84000.000
+Resetting prediction variance 199.495: freq=20046115 diff=459946477 stddev=50000.000
+Resetting prediction variance 200.173: freq=50536910 diff=381615014 stddev=84000.000
+Resetting prediction variance 200.480: freq=20750468 diff=460624690 stddev=50000.000
+Resetting prediction variance 201.158: freq=50725549 diff=392432814 stddev=84000.000
+Resetting prediction variance 201.464: freq=21471781 diff=459987570 stddev=50000.000
+Resetting prediction variance 202.142: freq=50918585 diff=402612270 stddev=84000.000
+Resetting prediction variance 202.448: freq=22206740 diff=458146103 stddev=50000.000
+Resetting prediction variance 203.127: freq=51115801 diff=412176530 stddev=84000.000
+Resetting prediction variance 203.433: freq=22952112 diff=455230682 stddev=50000.000
+Resetting prediction variance 204.111: freq=51316997 diff=421173400 stddev=84000.000
+Resetting prediction variance 204.418: freq=23704813 diff=451272222 stddev=50000.000
+Resetting prediction variance 205.095: freq=51522001 diff=429606176 stddev=84000.000
+Resetting prediction variance 205.403: freq=24461759 diff=446411278 stddev=50000.000
+Resetting prediction variance 206.080: freq=51730648 diff=437512338 stddev=84000.000
+Resetting prediction variance 206.387: freq=25220083 diff=440684980 stddev=50000.000
+Resetting prediction variance 207.064: freq=51942792 diff=444902349 stddev=84000.000
+Resetting prediction variance 207.371: freq=25976952 diff=434217857 stddev=50000.000
+Resetting prediction variance 208.049: freq=52158297 diff=451823661 stddev=84000.000
+Resetting prediction variance 208.355: freq=26729808 diff=427117413 stddev=50000.000
+Resetting prediction variance 209.033: freq=52377051 diff=458263316 stddev=84000.000
+Resetting prediction variance 209.339: freq=27476358 diff=419438038 stddev=50000.000
+Resetting prediction variance 210.018: freq=52598933 diff=464234943 stddev=84000.000
+Resetting prediction variance 210.324: freq=28214441 diff=411290730 stddev=50000.000
+Resetting prediction variance 211.003: freq=52823828 diff=469804025 stddev=84000.000
+Resetting prediction variance 211.309: freq=28942194 diff=402749041 stddev=50000.000
+Resetting prediction variance 211.987: freq=53051661 diff=474907909 stddev=84000.000
+Resetting prediction variance 212.293: freq=29657975 diff=393851459 stddev=50000.000
+Resetting prediction variance 212.972: freq=53282310 diff=479615396 stddev=84000.000
+Resetting prediction variance 213.277: freq=30360253 diff=384702756 stddev=50000.000
+Resetting prediction variance 213.957: freq=53515697 diff=483928719 stddev=84000.000
+Resetting prediction variance 214.262: freq=31047818 diff=375355234 stddev=50000.000
+Resetting prediction variance 214.941: freq=53751738 diff=487839776 stddev=84000.000
+Resetting prediction variance 215.247: freq=31719639 diff=365853453 stddev=50000.000
+Resetting prediction variance 215.925: freq=53990342 diff=491394178 stddev=84000.000
+Resetting prediction variance 216.231: freq=32374827 diff=356260091 stddev=50000.000
+Resetting prediction variance 216.910: freq=54231441 diff=494580517 stddev=84000.000
+Resetting prediction variance 217.215: freq=33012715 diff=346609102 stddev=50000.000
+Resetting prediction variance 217.894: freq=54474955 diff=497415661 stddev=84000.000
+Resetting prediction variance 218.200: freq=33632753 diff=336964300 stddev=50000.000
+Resetting prediction variance 218.879: freq=54720813 diff=499940480 stddev=84000.000
+Resetting prediction variance 219.184: freq=34234607 diff=327344208 stddev=50000.000
+Resetting prediction variance 219.863: freq=54968962 diff=502129007 stddev=84000.000
+Resetting prediction variance 220.169: freq=34818022 diff=317802657 stddev=50000.000
+Resetting prediction variance 220.848: freq=55219329 diff=504000176 stddev=84000.000
+Resetting prediction variance 221.154: freq=35382922 diff=308355585 stddev=50000.000
+Resetting prediction variance 221.833: freq=55471848 diff=505563953 stddev=84000.000
+Resetting prediction variance 222.138: freq=35929307 diff=299019004 stddev=50000.000
+Resetting prediction variance 222.818: freq=55726454 diff=506833709 stddev=84000.000
+Resetting prediction variance 223.122: freq=36457243 diff=289820192 stddev=50000.000
+Resetting prediction variance 223.802: freq=55983084 diff=507799666 stddev=84000.000
+Resetting prediction variance 224.106: freq=36966886 diff=280784587 stddev=50000.000
+Resetting prediction variance 224.787: freq=56241664 diff=508484555 stddev=84000.000
+Resetting prediction variance 225.091: freq=37458494 diff=271917339 stddev=50000.000
+Resetting prediction variance 225.771: freq=56502129 diff=508888681 stddev=84000.000
+Resetting prediction variance 226.075: freq=37932354 diff=263237849 stddev=50000.000
+Resetting prediction variance 226.755: freq=56764409 diff=509029677 stddev=84000.000
+Resetting prediction variance 227.059: freq=38388815 diff=254758359 stddev=50000.000
+Resetting prediction variance 227.740: freq=57028440 diff=508942191 stddev=84000.000
+Resetting prediction variance 228.044: freq=38828275 diff=246489056 stddev=50000.000
+Resetting prediction variance 228.724: freq=57294178 diff=508580858 stddev=84000.000
+Resetting prediction variance 229.028: freq=39251182 diff=238420640 stddev=50000.000
+Resetting prediction variance 229.708: freq=57561539 diff=507990583 stddev=84000.000
+Resetting prediction variance 230.012: freq=39657950 diff=230576415 stddev=50000.000
+Resetting prediction variance 230.693: freq=57830464 diff=507162321 stddev=84000.000
+Resetting prediction variance 230.996: freq=40049072 diff=222935381 stddev=50000.000
+Resetting prediction variance 231.678: freq=58100885 diff=506124091 stddev=84000.000
+Resetting prediction variance 231.981: freq=40424994 diff=215519172 stddev=50000.000
+Resetting prediction variance 232.662: freq=58372746 diff=504849211 stddev=84000.000
+Resetting prediction variance 232.965: freq=40786222 diff=208309601 stddev=50000.000
